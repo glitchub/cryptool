@@ -10,60 +10,87 @@ die() { echo "$*" >&9; exit 1; }
 usage()
 {
     me=${0##*/}
-    die "Usage:
+    die "\
+Usage:
 
-    $me [-v] sign from.prv < unsignedtext > signedtext
-    $me [-v] verify from.pub < signedtext > unsignedtext
-    $me [-v] encrypt to.pub < plaintext > ciphertext
-    $me [-v] decrypt to.prv < ciphertext > plaintext
-    $me [-v] generate keybase [\"info string\"]
-    $me [-v] dump key.pub|key.prv"
+    $me [-v] sign from.s < unsignedtext > signedtext
+    $me [-v] verify from.p < signedtext > unsignedtext
+    $me [-v] encrypt to.p < plaintext > ciphertext
+    $me [-v] decrypt to.s < ciphertext > plaintext
+    $me [-v] generate [-bits] keyname [arbitrary info text]
+    $me [-v] dump keyname.[s|p]
+	
+The .p extension is used for public key, .s for secret (private) key"
 }    
 
 (($# < 2)) && usage
 
+openssl=$(type -P openssl) || die "Requires executable openssl" 
+(
+   # parse version like 'OpenSSL 0.9.8zh 14 Jan 2016' or 'OpenSSL 1.0.2j 26 Sep 2016'
+   set -- $($openssl version | awk '{print $2,$3,$4}' FS='( |\\.)*') 
+   (($1)) && ( (($1 > 1)) || (($2 > 0)) || [[ $3 == "1e" || $3 > "1e" ]] ) || die "$openssl is version $1.$2.$3, must be at least 1.0.1e"  
+) || exit 1
+
+# ignore a local openssl.conf
+export OPENSSL_CONF=/dev/null
+conf()
+{
+	cat << EOT
+[req]
+req_extensions = v3_req
+distinguished_name = req_distinguished_name
+[v3_req]
+basicConstraints = CA:FALSE
+keyUsage = digitalSignature, keyEncipherment
+[req_distinguished_name]
+EOT
+}
+
 set -o pipefail
-
-openssl=/usr/bin/openssl
-[ -x $openssl ] || die "Requires executable $openssl" 
-
 case $1 in
     sign)
-        prv=${2%.prv}.prv; [ -f $prv ] || die "$prv not found" 
-        pub=${prv%.prv}.pub; [ -f $pub ] || die "$pub not found"
-        $openssl cms -binary -sign -nodetach -nocerts -signer $pub -inkey $prv -outform DER || die "Sign failed" 
+        s=${2%.s}.s; [ -f $s ] || die "$s not found" 
+        p=${s%.s}.p; [ -f $p ] || die "$p not found"
+        $openssl cms -binary -sign -nodetach -nocerts -signer $p -inkey $s -outform DER || die "Sign failed" 
         ;;
      
     verify)
-        pub=${2%.pub}.pub; [ -f $pub ] || die "$pub not found"
-        $openssl cms -inform DER -verify -CAfile $pub -certfile $pub || die "Verify failed"
+        p=${2%.p}.p; [ -f $p ] || die "$p not found"
+        $openssl cms -inform DER -verify -CAfile $p -certfile $p || die "Verify failed"
         ;;
    
     encrypt)
-        pub=${2%.pub}.pub; [ -f $pub ] || die "$pub not found"
-        $openssl cms -binary -encrypt -aes-256-cbc -outform DER $pub || die "Encrypt failed"
+        p=${2%.p}.p; [ -f $p ] || die "$p not found"
+        $openssl cms -binary -encrypt -aes-256-cbc -outform DER $p || die "Encrypt failed"
         ;;
 
     decrypt)
-        prv=${2%.prv}.prv; [ -f $prv ] || die "$prv not found"
-        $openssl cms -inform DER -decrypt -inkey $prv || die "Decrypt failed"
+        s=${2%.s}.s; [ -f $s ] || die "$s not found"
+        $openssl cms -inform DER -decrypt -inkey $s || die "Decrypt failed"
         ;;
 
     generate)
-        pub=$2.pub; [ -e $pub ] && die "$pub already exists"
-        prv=$2.prv; [ -e $prv ] && die "$prv already exists"
-        $openssl req -x509 -newkey rsa:2048 -nodes -batch -sha256 -days 36524 -keyout $prv > $pub || die "Key generation failed"
+	    shift
+		bits=4096
+		[[ $1 == -* ]] && { bits=${1:1}; shift; }
+		((bits >= 512)) || die "Must be at least 512 bits"
+        p=$1.p; [ -e $p ] && die "$p already exists"
+        s=$1.s; [ -e $s ] && die "$s already exists"
+        $openssl req -x509 -newkey rsa:$bits -config <(conf) -subj "/" -nodes -batch -sha256 -days 36524 -keyout $s > $p || die "Key generation failed"
         # append greppable info strings, note ':' can't appear in base64
-        shift
-        echo "Info: $*" >> $prv 
-        echo "Info: $*" >> $pub
+		name=$1
+		shift
+		(($#)) && name+=" - "
+        echo "Info: $name$*" >> $s 
+        echo "Info: $name$*" >> $p
         ;;
 
     dump)
         k=$2; [ -f $k ] || die "$k not found"
         case $k in
-            *.pub) $openssl x509 -in $k -text -noout || die "Invalid public key $k";;
-            *.prv) $openssl rsa -in $k -text -check -noout || die "Invalid private key $k";;
+            *.p) $openssl x509 -in $k -text -noout || die "Invalid public key $k";;
+            *.s) $openssl rsa -in $k -text -check -noout || die "Invalid secret key $k";;
             *) die "Invalid key name";;
         esac    
         grep Info: $k

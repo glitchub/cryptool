@@ -1,39 +1,39 @@
 Wrapper script for openssl, supporting the following functions:
 
-    cryptool sign from.prv < data > data.signed  
-
-        Given the sender's private RSA key, read arbitrary data from stdin and
-        write a binary PKCS 7 object to stdout which contains the input data
-        and its SHA256, encrypted with the RSA key.
+    cryptool sign from.s < unsignedtext > signedtext
+                
+        Given the sender's secret key, read arbitrary data from stdin and write
+        a binary PKCS7 object to stdout which contains the input data and its
+        SHA256, encrypted with the secret key.
         
-    cryptool verify from.pub < data.signed > data
+    cryptool verify from.p < signedtext > unsignedtext
+        
+        Given the sender's public key, read a binary PKCS7 object from stdin
+        and verify the signature of the contained data, write it to stdout and
+        exit 0.
 
-        Given the sender's public RSA key, read the binary PKCS 7 object from
-        stdin and verify the signature of the contained data, if correct it to
-        stdout and exit 0.
-    
-    cryptool encrypt to.pub < data > data.encrypted
-
-        Given the recipient's public RSA key, read arbitrary data from stdin
-        and write a binary PKCS 7 object to stdout containing the original data
+    cryptool encrypt to.p < plaintext > ciphertext
+             
+        Given the recipient's public key, read arbitrary data from stdin and
+        write a binary PKCS7 object to stdout containing the original data
         encrypted with a random AES256 session key, and the session key
-        encrypted with the RSA key.
-
-    cryptool decrypt to.prv < data.encrypted > data
- 
-        Given a recpient's private key, read a binary PKCS 7 object from stdin,
+        encrypted with the public key.
+        
+    cryptool decrypt to.s < ciphertext > plaintext
+                
+        Given a recpient's secret key, read a binary PKCS7 object from stdin,
         decrypt the enclosed data and write it to stdout. This is guaranteed to
-        fail if the wrong key is provided, but it will produce some amont of
-        random garbage first.
-
-    cryptool generate basename ["info string"]
-
+        fail if the wrong key is provided, but it will produce random garbage
+        first.
+        
+    cryptool generate [-bits] keyname [arbitrary info text]
+                
         Given a basename eg 'test', generate 2048-bit RSA keys test.prv and
         test.pub as PEM files. The info string, if given, will be appended to
         the PEM text in a greppable fashion. test.prv is just an RSA private
         key, test.pub is actually a self-signed X509 cert.
-
-    cryptool dump key.pub|key.prv
-
+        
+    cryptool dump keyname.[s|p]
+        
         Given a key file created with 'generate', print some interesting
         information about it. 
