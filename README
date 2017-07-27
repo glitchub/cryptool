@@ -33,7 +33,12 @@ Wrapper script for openssl, supporting the following functions:
         the PEM text in a greppable fashion. test.prv is just an RSA private
         key, test.pub is actually a self-signed X509 cert.
         
-    cryptool dump keyname.[s|p]
+    cryptool dump keyname[.s|.p]
         
         Given a key file created with 'generate', print some interesting
-        information about it. 
+        information about it.
+
+    cryptool modulus keyname [.s|.p]
+
+        Given a key file created with 'generate', print the modulus in hex.
+        Paired secret and public keys have the same modulus.

@@ -1,5 +1,7 @@
 #!/bin/bash
 
+
+
 # disable stderr unless -v 
 exec 9>&2
 if [ "$1" == -v ]; then shift; else exec 2>/dev/null; fi
@@ -18,6 +20,7 @@ Usage:
     $me [-v] encrypt to.p < plaintext > ciphertext
     $me [-v] decrypt to.s < ciphertext > plaintext
     $me [-v] generate [-bits] keyname [arbitrary info text]
+    $me [-v] modulus key.p
     $me [-v] dump keyname.[s|p]
 	
 The .p extension is used for public key, .s for secret (private) key"
@@ -86,6 +89,15 @@ case $1 in
         echo "Info: $name$*" >> $p
         ;;
 
+    modulus)
+        k=$2; [ -f $k ] || die "$k not found"
+        case $k in
+            *.p) $openssl x509 -in $k -modulus -noout | awk '{print $2}' FS== || die "Invalid public key $k";;
+            *.s) $openssl rsa -in $k -modulus -noout | awk '{print $2}' FS== || die "Invalid secret key $k";;
+            *) die "Invalid key name";;
+        esac    
+        ;;
+    
     dump)
         k=$2; [ -f $k ] || die "$k not found"
         case $k in
@@ -95,7 +107,7 @@ case $1 in
         esac    
         grep Info: $k
         ;;
-
+    
     *) usage;;
 esac  
 true
