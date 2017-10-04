@@ -28,10 +28,10 @@ Wrapper script for openssl, supporting the following functions:
         
     cryptool generate [-bits] keyname [arbitrary info text]
                 
-        Given a basename eg 'test', generate 2048-bit RSA keys test.prv and
-        test.pub as PEM files. The info string, if given, will be appended to
-        the PEM text in a greppable fashion. test.prv is just an RSA private
-        key, test.pub is actually a self-signed X509 cert.
+        Given a basename eg 'test', generate 2048-bit RSA keys test.s and
+        test.p as PEM files. The info string, if given, will be appended to
+        the PEM text in a greppable fashion. test.s is just an RSA private
+        key, test.p is actually a self-signed X509 cert.
         
     cryptool dump keyname[.s|.p]
         
