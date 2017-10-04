@@ -1,16 +1,15 @@
-Wrapper script for openssl, supporting the following functions:
+Wrapper script for openssl RSA operations, supporting the following functions:
 
     cryptool sign from.s < unsignedtext > signedtext
                 
         Given the sender's secret key, read arbitrary data from stdin and write
-        a binary PKCS7 object to stdout which contains the input data and its
-        SHA256, encrypted with the secret key.
+        a binary PKCS7 object to stdout which contains the input data signed by
+        the secret key.
         
     cryptool verify from.p < signedtext > unsignedtext
         
-        Given the sender's public key, read a binary PKCS7 object from stdin
-        and verify the signature of the contained data, write it to stdout and
-        exit 0.
+        Given the sender's public key, read a binary PKCS7 object from stdin,
+        verify the signature of the enclosed data and write it to stdout.
 
     cryptool encrypt to.p < plaintext > ciphertext
              
@@ -28,17 +27,28 @@ Wrapper script for openssl, supporting the following functions:
         
     cryptool generate [-bits] keyname [arbitrary info text]
                 
-        Given a basename eg 'test', generate 2048-bit RSA keys test.prv and
-        test.pub as PEM files. The info string, if given, will be appended to
-        the PEM text in a greppable fashion. test.prv is just an RSA private
-        key, test.pub is actually a self-signed X509 cert.
+        Given a basename eg 'test', generate secret key file 'test.s' and
+        public key file 'test.p'. The info string, if given, will be added to
+        the key and reported by the 'dump' command below. The default key size
+        is 4096 bits, this can be altered by specifying '-bits', where 'bits'
+        is a number at least 512. 
         
-    cryptool dump keyname[.s|.p]
-        
-        Given a key file created with 'generate', print some interesting
-        information about it.
-
-    cryptool modulus keyname [.s|.p]
+    cryptool modulus keyname.(s|p)
 
         Given a key file created with 'generate', print the modulus in hex.
         Paired secret and public keys have the same modulus.
+    
+    cryptool dump keyname.(s|p)
+        
+        Given a key file created with 'generate', print some interesting
+        information about it including any info that was provided during
+        generation.
+
+Any error will result in a non-zero exit status. To help diagnose, try
+'cryptool -v ...' to enable lots of output on stderr. 
+
+There's no way to distinguish a decrypt or verify failure from an actual error,
+such as providing a corrupted key.
+
+This script requires and checks for the openssl command-line program version
+1.0.1e or later.

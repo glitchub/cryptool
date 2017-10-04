@@ -1,8 +1,6 @@
 #!/bin/bash
 
-
-
-# disable stderr unless -v 
+# disable stderr unless -v
 exec 9>&2
 if [ "$1" == -v ]; then shift; else exec 2>/dev/null; fi
 
@@ -20,26 +18,26 @@ Usage:
     $me [-v] encrypt to.p < plaintext > ciphertext
     $me [-v] decrypt to.s < ciphertext > plaintext
     $me [-v] generate [-bits] keyname [arbitrary info text]
-    $me [-v] modulus key.p
-    $me [-v] dump keyname.[s|p]
-	
+    $me [-v] modulus key.(s|p)
+    $me [-v] dump keyname.(s|p)
+
 The .p extension is used for public key, .s for secret (private) key"
-}    
+}
 
 (($# < 2)) && usage
 
-openssl=$(type -P openssl) || die "Requires executable openssl" 
+openssl=$(type -P openssl) || die "Requires executable openssl"
 (
    # parse version like 'OpenSSL 0.9.8zh 14 Jan 2016' or 'OpenSSL 1.0.2j 26 Sep 2016'
-   set -- $($openssl version | awk '{print $2,$3,$4}' FS='( |\\.)*') 
-   (($1)) && ( (($1 > 1)) || (($2 > 0)) || [[ $3 == "1e" || $3 > "1e" ]] ) || die "$openssl is version $1.$2.$3, must be at least 1.0.1e"  
+   set -- $($openssl version | awk '{print $2,$3,$4}' FS='( |\\.)*')
+   (($1)) && ( (($1 > 1)) || (($2 > 0)) || [[ $3 == "1e" || $3 > "1e" ]] ) || die "$openssl is version $1.$2.$3, must be at least 1.0.1e"
 ) || exit 1
 
 # ignore a local openssl.conf
 export OPENSSL_CONF=/dev/null
 conf()
 {
-	cat << EOT
+        cat << EOT
 [req]
 req_extensions = v3_req
 distinguished_name = req_distinguished_name
@@ -53,16 +51,16 @@ EOT
 set -o pipefail
 case $1 in
     sign)
-        s=${2%.s}.s; [ -f $s ] || die "$s not found" 
+        s=${2%.s}.s; [ -f $s ] || die "$s not found"
         p=${s%.s}.p; [ -f $p ] || die "$p not found"
-        $openssl cms -binary -sign -nodetach -nocerts -signer $p -inkey $s -outform DER || die "Sign failed" 
+        $openssl cms -binary -sign -nodetach -nocerts -signer $p -inkey $s -outform DER || die "Sign failed"
         ;;
-     
+
     verify)
         p=${2%.p}.p; [ -f $p ] || die "$p not found"
         $openssl cms -inform DER -verify -CAfile $p -certfile $p || die "Verify failed"
         ;;
-   
+
     encrypt)
         p=${2%.p}.p; [ -f $p ] || die "$p not found"
         $openssl cms -binary -encrypt -aes-256-cbc -outform DER $p || die "Encrypt failed"
@@ -74,18 +72,18 @@ case $1 in
         ;;
 
     generate)
-	    shift
-		bits=4096
-		[[ $1 == -* ]] && { bits=${1:1}; shift; }
-		((bits >= 512)) || die "Must be at least 512 bits"
+        shift
+        bits=4096
+        [[ $1 == -* ]] && { bits=${1:1}; shift; }
+        ((bits >= 512)) || die "Must be at least 512 bits"
         p=$1.p; [ -e $p ] && die "$p already exists"
         s=$1.s; [ -e $s ] && die "$s already exists"
         $openssl req -x509 -newkey rsa:$bits -config <(conf) -subj "/" -nodes -batch -sha256 -days 36524 -keyout $s > $p || die "Key generation failed"
         # append greppable info strings, note ':' can't appear in base64
-		name=$1
-		shift
-		(($#)) && name+=" - "
-        echo "Info: $name$*" >> $s 
+        name=$1
+        shift
+        (($#)) && name+=" - "
+        echo "Info: $name$*" >> $s
         echo "Info: $name$*" >> $p
         ;;
 
@@ -95,19 +93,20 @@ case $1 in
             *.p) $openssl x509 -in $k -modulus -noout | awk '{print $2}' FS== || die "Invalid public key $k";;
             *.s) $openssl rsa -in $k -modulus -noout | awk '{print $2}' FS== || die "Invalid secret key $k";;
             *) die "Invalid key name";;
-        esac    
+        esac
         ;;
-    
+
     dump)
         k=$2; [ -f $k ] || die "$k not found"
         case $k in
             *.p) $openssl x509 -in $k -text -noout || die "Invalid public key $k";;
             *.s) $openssl rsa -in $k -text -check -noout || die "Invalid secret key $k";;
             *) die "Invalid key name";;
-        esac    
+        esac
         grep Info: $k
         ;;
-    
+
     *) usage;;
-esac  
+esac
+
 true
