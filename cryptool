@@ -13,97 +13,143 @@ usage()
     die "\
 Usage:
 
-    $me [-v] sign from.s < unsignedtext > signedtext
-    $me [-v] verify from.p < signedtext > unsignedtext
+    $me [-v] sign from.p from.s < unsignedtext > signedtext
+    $me [-v] verify from.p [CAkey.p] < signedtext > unsignedtext
     $me [-v] encrypt to.p < plaintext > ciphertext
     $me [-v] decrypt to.s < ciphertext > plaintext
-    $me [-v] generate [-bits] keyname [arbitrary info text]
-    $me [-v] modulus key.(s|p)
-    $me [-v] dump keyname.(s|p)
+    $me [-v] generate [-n bits] [-i 'info text'] keyname [CAkey.p CAkey.s]
+    $me [-v] check key.p CAkey.p
+    $me [-v] dump [-m] key.(s|p)
 
 The .p extension is used for public key, .s for secret (private) key"
 }
 
-(($# < 2)) && usage
+(($#)) || usage
 
-openssl=$(type -P openssl) || die "Requires executable openssl"
-(
-   # parse version like 'OpenSSL 0.9.8zh 14 Jan 2016' or 'OpenSSL 1.0.2j 26 Sep 2016'
-   set -- $($openssl version | awk '{print $2,$3,$4}' FS='( |\\.)*')
-   (($1)) && ( (($1 > 1)) || (($2 > 0)) || [[ $3 == "1e" || $3 > "1e" ]] ) || die "$openssl is version $1.$2.$3, must be at least 1.0.1e"
-) || exit 1
+# hunt for usable openssl
+unset openssl
+for o in /usr/local/dev/bin/openssl /usr/bin/openssl $(type -P openssl); do
+    if [ -x "$o" ] && (
+        # "OpenSSL 1.0.2k  26 Jan 2017" -> "OpenSSL 1 0 2k 26 Jan 2017" 
+        set -- $(IFS=" ."; echo $($o version))
+        # We want "OpenSSL 1 0 1e" or higher
+        (($#>=4)) && [[ $1 == OpenSSL ]] && (($2>=1)) && ! ( (($2==1 && $3==0)) && [[ $4 < 1e ]] )
+    ); then
+        openssl=$o
+        break
+   fi     
+done
+[ "$openssl" ] || die "Requires OpenSSL 1.0.1e or later"
+echo "Using $openssl" >&2
 
-# ignore a local openssl.conf
+# 'req' config
 export OPENSSL_CONF=/dev/null
 conf()
 {
         cat << EOT
-[req]
-req_extensions = v3_req
-distinguished_name = req_distinguished_name
-[v3_req]
-basicConstraints = CA:FALSE
-keyUsage = digitalSignature, keyEncipherment
-[req_distinguished_name]
+[ req ]
+distinguished_name = dn
+x509_extensions = ext
+[ dn ]
+[ ext ]
+basicConstraints = CA:true,pathlen:0
 EOT
 }
 
 set -o pipefail
-case $1 in
+cmd=$1
+shift
+case $cmd in
     sign)
+        (($# == 2)) || usage
+        p=${1%.p}.p; [ -f $p ] || die "$p not found"
         s=${2%.s}.s; [ -f $s ] || die "$s not found"
-        p=${s%.s}.p; [ -f $p ] || die "$p not found"
         $openssl cms -binary -sign -nodetach -nocerts -signer $p -inkey $s -outform DER || die "Sign failed"
         ;;
 
     verify)
-        p=${2%.p}.p; [ -f $p ] || die "$p not found"
-        $openssl cms -inform DER -verify -CAfile $p -certfile $p || die "Verify failed"
+        (($# && $# <= 2)) || usage
+        p=${1%.p}.p; [ -f $p ] || die "$p not found"
+        cp=$p
+        (($# == 2)) && { cp=${2%.p}.p; [ -f $cp ] || die "$cp not found"; }
+        $openssl cms -inform DER -verify -CAfile $cp -certfile $p || die "Verify failed"
         ;;
 
     encrypt)
-        p=${2%.p}.p; [ -f $p ] || die "$p not found"
+        (($# == 1)) || usage
+        p=${1%.p}.p; [ -f $p ] || die "$p not found"
         $openssl cms -binary -encrypt -aes-256-cbc -outform DER $p || die "Encrypt failed"
         ;;
 
     decrypt)
-        s=${2%.s}.s; [ -f $s ] || die "$s not found"
+        (($# == 1)) || "Expected: key.s"
+        s=${1%.s}.s; [ -f $s ] || die "$s not found"
         $openssl cms -inform DER -decrypt -inkey $s || die "Decrypt failed"
         ;;
 
     generate)
-        shift
-        bits=4096
-        [[ $1 == -* ]] && { bits=${1:1}; shift; }
-        ((bits >= 512)) || die "Must be at least 512 bits"
+        bits=4096 
+        unset info cs cp
+        while getopts ":n:i:" o; do case $o in
+            n) bits=$OPTARG;;
+            i) info=$OPTARG;;
+            *) usage;;
+        esac; done    
+        shift $((OPTIND-1))
+        (($# == 1 || $# == 3)) || usage
         p=$1.p; [ -e $p ] && die "$p already exists"
         s=$1.s; [ -e $s ] && die "$s already exists"
-        $openssl req -x509 -newkey rsa:$bits -config <(conf) -subj "/" -nodes -batch -sha256 -days 36524 -keyout $s > $p || die "Key generation failed"
-        # append greppable info strings, note ':' can't appear in base64
-        name=$1
-        shift
-        (($#)) && name+=" - "
-        echo "Info: $name$*" >> $s
-        echo "Info: $name$*" >> $p
+        # configure for self-signing and usable as a CA
+        signopts="-signkey $s -trustout"
+        if (($# == 3)); then
+            cp=${2%.p}.p; [ -f $cp ] || die "$cp not found"
+            cs=${3%.s}.s; [ -f $cs ] || die "$cs not found"
+            # configure for CA signing
+            signopts="-CA $cp -CAkey $cs"
+        fi    
+        ((bits >= 512)) || die "Must be at least 512 bits"
+        serial=$(date +%s)
+        # first generate the secret key
+        $openssl genrsa $bits > $s
+        # then create key request and sign per $signopts
+        $openssl req -new -key $s -config <(conf) -subj "/CN=$1 $serial" -nodes -batch | 
+        $openssl x509 -req -set_serial $serial -sha256 -days 36524 $signopts > $p || die "Key generation failed"
+        # append greppable info strings
+        echo Info: $1 $serial $info >> $s
+        echo Info: $1 $serial $info >> $p
         ;;
 
-    modulus)
-        k=$2; [ -f $k ] || die "$k not found"
-        case $k in
-            *.p) $openssl x509 -in $k -modulus -noout | awk '{print $2}' FS== || die "Invalid public key $k";;
-            *.s) $openssl rsa -in $k -modulus -noout | awk '{print $2}' FS== || die "Invalid secret key $k";;
-            *) die "Invalid key name";;
-        esac
+    check)
+        (($# == 2)) || usage
+        p=${1%.p}.p; [ -f $p ] || die "$p not found"
+        cp=${2%.p}.p; [ -f $cp ] || die "$cp not found"
+        $openssl verify -CAfile $cp $p || die "$p is not signed by $cp"
         ;;
 
     dump)
-        k=$2; [ -f $k ] || die "$k not found"
-        case $k in
-            *.p) $openssl x509 -in $k -text -noout || die "Invalid public key $k";;
-            *.s) $openssl rsa -in $k -text -check -noout || die "Invalid secret key $k";;
-            *) die "Invalid key name";;
-        esac
-        grep Info: $k
+        modulus=0
+        while getopts ":m" o; do case $o in
+            m) modulus=1;;
+            *) usage;;
+        esac; done    
+        shift $((OPTIND-1))
+        (($# == 1)) || usage "Expected: key.[ps]"
+        k=$1; [ -f $k ] || die "$k not found"
+        if ((modulus)); then
+            case $k in
+                *.p) $openssl x509 -in $k -modulus -noout || die "Invalid public key $k";;
+                *.s) $openssl rsa -in $k -modulus -noout || die "Invalid secret key $k";;
+                *) die "Invalid key name";;
+            esac
+        else    
+            case $k in
+                *.p) $openssl x509 -in $k -text -noout || die "Invalid public key $k";;
+                *.s) $openssl rsa -in $k -text -check -noout || die "Invalid secret key $k";;
+                *) die "Invalid key name";;
+            esac
+            # also show appended info
+            grep Info: $k
+        fi    
         ;;
 
     *) usage;;
