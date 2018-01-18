@@ -1,48 +1,47 @@
 Wrapper script for openssl RSA operations, supporting the following functions:
 
-    cryptool sign from.s < unsignedtext > signedtext
+    cryptool sign from.p from.s  < unsignedtext > signedtext
                 
-        Given the sender's secret key, read arbitrary data from stdin and write
-        a binary PKCS7 object to stdout which contains the input data signed by
-        the secret key.
+        Given the sender's public and secret key, read arbitrary data from
+        stdin, sign it with the private key and write the result to stdout.
         
-    cryptool verify from.p < signedtext > unsignedtext
+    cryptool verify from.p [CAkey.p] < signedtext > unsignedtext
         
-        Given the sender's public key, read a binary PKCS7 object from stdin,
-        verify the signature of the enclosed data and write it to stdout.
+        Given the sender's public key, read the output of the sign command from
+        stdin, verify the signature and write the result to stdout.  If from.p
+        is signed with a CAkey then the CA public key must also be provided. 
 
     cryptool encrypt to.p < plaintext > ciphertext
              
-        Given the recipient's public key, read arbitrary data from stdin and
-        write a binary PKCS7 object to stdout containing the original data
-        encrypted with a random AES256 session key, and the session key
-        encrypted with the public key.
+        Given the recipient's public key, read arbitrary data from stdin,
+        encrypt it with the public key and write the result to stdout.
         
     cryptool decrypt to.s < ciphertext > plaintext
                 
-        Given a recpient's secret key, read a binary PKCS7 object from stdin,
-        decrypt the enclosed data and write it to stdout. This is guaranteed to
-        fail if the wrong key is provided, but it will produce random garbage
-        first.
+        Given a recpient's secret key, read the output of the encrypt command
+        from stdin, decrypt and write it to stdout. This is guaranteed to fail
+        if the wrong key is provided, but it will produce random garbage first.
         
-    cryptool generate [-bits] keyname [arbitrary info text]
+    cryptool generate [-n bits] [-i 'info text' keyname [CAkey.p CAkey.s]
                 
-        Given a basename eg 'test', generate secret key file 'test.s' and
+        Given a key basename eg 'test', generate secret key file 'test.s' and
         public key file 'test.p'. The info string, if given, will be added to
         the key and reported by the 'dump' command below. The default key size
-        is 4096 bits, this can be altered by specifying '-bits', where 'bits'
-        is a number at least 512. 
-        
-    cryptool modulus keyname.(s|p)
+        is 4096 bits, this can be altered by specifying '-n bits', where 'bits'
+        is a number at least 512. If the CAkey pair is provided, then the
+        generated key will be signed by the CAkey, and CAkey.p will be required
+        to verify data signed by test.p. (Note a CAkey can be any generated
+        keypair that was not itself signed with a CAkey).
 
-        Given a key file created with 'generate', print the modulus in hex.
-        Paired secret and public keys have the same modulus.
-    
-    cryptool dump keyname.(s|p)
+    cryptool check key.p CAkey.p
+
+        Check that the given key.p is signed with the given CAkey.p.
+        
+    cryptool dump [-m] key.(s|p)
         
         Given a key file created with 'generate', print some interesting
         information about it including any info that was provided during
-        generation.
+        generation. If -m is given the the hex modulus will be output.
 
 Any error will result in a non-zero exit status. To help diagnose, try
 'cryptool -v ...' to enable lots of output on stderr. 
