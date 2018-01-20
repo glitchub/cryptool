@@ -13,19 +13,61 @@ usage()
     die "\
 Usage:
 
-    $me [-v] sign from.p from.s < unsignedtext > signedtext
-    $me [-v] verify from.p [CAkey.p] < signedtext > unsignedtext
-    $me [-v] encrypt to.p < plaintext > ciphertext
-    $me [-v] decrypt to.s < ciphertext > plaintext
-    $me [-v] generate [-n bits] [-i 'info text'] keyname [CAkey.p CAkey.s]
-    $me [-v] check key.p CAkey.p
-    $me [-v] dump [-m] key.(s|p)
+    $me [-v] sign from[.p from.s] < unsignedtext > signedtext
+        Sign the input on stdin with the sender's key pair, and output as
+        obfuscated result.
 
-The .p extension is used for public key, .s for secret (private) key"
+    $me [-v] verify from[.p] [signer[.p]] < signedtext > unsignedtext
+        Verify the signature of signed data on stdin with the sender's public
+        key and output the original unsigned input. If the sender's key is
+        signed, then must also provide the signer's public key.
+
+    $me [-v] encrypt to[.p] < plaintext > ciphertext
+        Encrypt the input on stdin with recipient's public key, output the
+        encrypted result.
+
+    $me [-v] decrypt to[.s] < ciphertext > plaintext
+        Decrypt the input with the recipient's private key, output the original
+        unencrypted input.
+
+    $me [-v] generate [-n bits] [-i 'info text'] [-s secret.s] keyname [signer[.p signer.s]]
+        
+        Create new keyname.s and keyname.p. If a signer keypair is provided
+        then the public key will be signed. 
+        
+            -n bits - specify number of key bits, default is 4096
+
+            -i 'info text' - arbitrary text that will appear in the key files,
+            for documentary purposes.
+
+            -s secret.s - Clone the specified secret key rather than generating
+            a new one. This allows creation of new public certificates for
+            existing secret keys.
+        
+    $me [-v] check key[.p] signer[.p]
+
+        Check that specified key is signed by the specified signer key.
+        
+    $me [-v] dump [-m] key.(s|p)
+        
+        Dump interesting information from provided secret or public key.
+            
+            -m - only dump the modulus, in hex format.
+
+All operations exit with 0 in the case of success, otherwise non-zero.
+
+The .p extension is used for public key, .s for secret (private) key.
+
+The -v option enables verbosity on stdout, try this when an operation fails.
+
+There's no way to distinguish a decrypt or verify failure from an actual error,
+such as providing a corrupted key.
+
+This script requires and checks for the openssl command-line program version
+1.0.1e or later."
 }
 
 (($#)) || usage
-
 # hunt for usable openssl
 unset openssl
 for o in /usr/local/dev/bin/openssl /usr/bin/openssl $(type -P openssl); do
@@ -42,18 +84,15 @@ done
 [ "$openssl" ] || die "Requires OpenSSL 1.0.1e or later"
 echo "Using $openssl" >&2
 
-# 'req' config
+# ignore standard config
 export OPENSSL_CONF=/dev/null
-conf()
+
+# return true if specified key is self-signed
+selfsigned()
 {
-        cat << EOT
-[ req ]
-distinguished_name = dn
-x509_extensions = ext
-[ dn ]
-[ ext ]
-basicConstraints = CA:true,pathlen:0
-EOT
+    local hash=($($openssl x509 -hash -issuer_hash -noout < $1)) || die "X509 hash failed"
+    ((${#hash[*]} == 2)) || die "Invalid X509 hash result '${hash[*]}'"
+    [ ${hash[0]} == ${hash[1]} ]
 }
 
 set -o pipefail
@@ -61,9 +100,11 @@ cmd=$1
 shift
 case $cmd in
     sign)
-        (($# == 2)) || usage
-        p=${1%.p}.p; [ -f $p ] || die "$p not found"
-        s=${2%.s}.s; [ -f $s ] || die "$s not found"
+        (($# == 1 || $# == 2)) || usage2
+        p=$1.p; s=$1.s
+        (($# == 2)) && { p=$1; s=$2; }
+        [ -f $p ] || die "$p not found"
+        [ -f $s ] || die "$s not found"
         $openssl cms -binary -sign -nodetach -nocerts -signer $p -inkey $s -outform DER || die "Sign failed"
         ;;
 
@@ -82,39 +123,85 @@ case $cmd in
         ;;
 
     decrypt)
-        (($# == 1)) || "Expected: key.s"
+        (($# == 1)) || usage
         s=${1%.s}.s; [ -f $s ] || die "$s not found"
         $openssl cms -inform DER -decrypt -inkey $s || die "Decrypt failed"
         ;;
 
     generate)
         bits=4096 
-        unset info cs cp
-        while getopts ":n:i:" o; do case $o in
+        keyname=$1
+        unset info cs cp secret
+        while getopts ":n:i:s:" o; do case $o in
             n) bits=$OPTARG;;
             i) info=$OPTARG;;
+            s) secret=$OPTARG; [ -f "$secret" ] || die "$secret not found";;
             *) usage;;
         esac; done    
         shift $((OPTIND-1))
-        (($# == 1 || $# == 3)) || usage
+        (($# >= 1 && $# <= 3)) || usage
         p=$1.p; [ -e $p ] && die "$p already exists"
         s=$1.s; [ -e $s ] && die "$s already exists"
-        # configure for self-signing and usable as a CA
-        signopts="-signkey $s -trustout"
-        if (($# == 3)); then
-            cp=${2%.p}.p; [ -f $cp ] || die "$cp not found"
-            cs=${3%.s}.s; [ -f $cs ] || die "$cs not found"
-            # configure for CA signing
-            signopts="-CA $cp -CAkey $cs"
+        # Configure for self-signing
+        signopts="-selfsign -keyfile $s"
+        if (($# > 1)); then
+            cp=$2.p; cs=$2.s
+            (($# > 2)) && { cp=$2; cs=$3; }
+            [ -f $cs ] || die "$cs not found"
+            [ -f $cp ] || die "$cp not found"
+            selfsigned $cp || die "$cp is already signed"
+            # Configure for CA signing
+            signopts="-cert $cp -keyfile $cs"
         fi    
         ((bits >= 512)) || die "Must be at least 512 bits"
+        
+        # Create a work directory
+        work=${TMPDIR:-"/tmp"}/cryptool.$RANDOM.$RANDOM
+        mkdir $work || die "Unable to create directory $work"
+        echo "Using work dir $work" >&2
+        # Make sure it's deleted on exit
+        trap "rm -rf $work" EXIT
+        # Config for req and ca commands
+        echo "
+        [ req ]
+        distinguished_name = dn
+        x509_extensions = ext
+        [ dn ]
+        [ ext ]
+        basicConstraints = CA:true,pathlen:0
+        [ ca ]
+        default_ca = default_ca
+        [ default_ca ]
+        new_certs_dir = $work/newcerts
+        database = $work/database
+        serial = $work/serial
+        default_md = sha256
+        policy = policy
+        default_startdate = 20000101000000Z
+        default_enddate = 20991231235959Z
+        unique_subject = no
+        [ policy ]
+        commonName = supplied
+        " > $work/config
+        # Other stuff needed by the ca command
+        mkdir -p $work/newcerts
+        touch $work/database
         serial=$(date +%s)
-        # first generate the secret key
-        $openssl genrsa $bits > $s
-        # then create key request and sign per $signopts
-        $openssl req -new -key $s -config <(conf) -subj "/CN=$1 $serial" -nodes -batch | 
-        $openssl x509 -req -set_serial $serial -sha256 -days 36524 $signopts > $p || die "Key generation failed"
-        # append greppable info strings
+        echo "Using serial number $serial" >&2
+        # Serial file contains hex
+        printf %X $serial > $work/serial
+        
+        # Now, generate the secret key, maybe from the existing secret
+        if [ "$secret" ]; then
+           $openssl rsa 2>/dev/null < $secret > $s || die "Invalid secret key $secret"
+        else
+            $openssl genrsa $bits > $s || die "$s generation failed"
+        fi    
+        # Create signing request
+        $openssl req -config $work/config -new -key $s -subj "/CN=$1 $serial" -batch > $work/csr || die "CSR generation failed"
+        # Sign it per the config and $signopts
+        $openssl ca -config $work/config -notext $signopts -in $work/csr -out $p -batch || die "CSR signing failed"
+        # Append greppable info strings to the key files
         echo Info: $1 $serial $info >> $s
         echo Info: $1 $serial $info >> $p
         ;;
@@ -123,7 +210,8 @@ case $cmd in
         (($# == 2)) || usage
         p=${1%.p}.p; [ -f $p ] || die "$p not found"
         cp=${2%.p}.p; [ -f $cp ] || die "$cp not found"
-        $openssl verify -CAfile $cp $p || die "$p is not signed by $cp"
+        selfsigned $p && die "$p is self-signed"
+        $openssl verify -CAfile $cp $p >&2 || die "$p is not signed by $cp"
         ;;
 
     dump)

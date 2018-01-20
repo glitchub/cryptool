@@ -1,50 +1,51 @@
 Wrapper script for openssl RSA operations, supporting the following functions:
 
-    cryptool sign from.p from.s  < unsignedtext > signedtext
-                
-        Given the sender's public and secret key, read arbitrary data from
-        stdin, sign it with the private key and write the result to stdout.
-        
-    cryptool verify from.p [CAkey.p] < signedtext > unsignedtext
-        
-        Given the sender's public key, read the output of the sign command from
-        stdin, verify the signature and write the result to stdout.  If from.p
-        is signed with a CAkey then the CA public key must also be provided. 
+    cryptool [-v] sign from[.p from.s] < unsignedtext > signedtext
+        Sign the input on stdin with the sender's key pair, and output as
+        obfuscated result.
 
-    cryptool encrypt to.p < plaintext > ciphertext
-             
-        Given the recipient's public key, read arbitrary data from stdin,
-        encrypt it with the public key and write the result to stdout.
-        
-    cryptool decrypt to.s < ciphertext > plaintext
-                
-        Given a recpient's secret key, read the output of the encrypt command
-        from stdin, decrypt and write it to stdout. This is guaranteed to fail
-        if the wrong key is provided, but it will produce random garbage first.
-        
-    cryptool generate [-n bits] [-i 'info text' keyname [CAkey.p CAkey.s]
-                
-        Given a key basename eg 'test', generate secret key file 'test.s' and
-        public key file 'test.p'. The info string, if given, will be added to
-        the key and reported by the 'dump' command below. The default key size
-        is 4096 bits, this can be altered by specifying '-n bits', where 'bits'
-        is a number at least 512. If the CAkey pair is provided, then the
-        generated key will be signed by the CAkey, and CAkey.p will be required
-        to verify data signed by test.p. (Note a CAkey can be any generated
-        keypair that was not itself signed with a CAkey).
+    cryptool [-v] verify from[.p] [signer[.p]] < signedtext > unsignedtext
+        Verify the signature of signed data on stdin with the sender's public
+        key and output the original unsigned input. If the sender's key is
+        signed, then must also provide the signer's public key.
 
-    cryptool check key.p CAkey.p
+    cryptool [-v] encrypt to[.p] < plaintext > ciphertext
+        Encrypt the input on stdin with recipient's public key, output the
+        encrypted result.
 
-        Check that the given key.p is signed with the given CAkey.p.
-        
-    cryptool dump [-m] key.(s|p)
-        
-        Given a key file created with 'generate', print some interesting
-        information about it including any info that was provided during
-        generation. If -m is given the the hex modulus will be output.
+    cryptool [-v] decrypt to[.s] < ciphertext > plaintext
+        Decrypt the input with the recipient's private key, output the original
+        unencrypted input.
 
-Any error will result in a non-zero exit status. To help diagnose, try
-'cryptool -v ...' to enable lots of output on stderr. 
+    cryptool [-v] generate [-n bits] [-i 'info text'] [-s secret.s] keyname [signer[.p signer.s]]
+        
+        Create new keyname.s and keyname.p. If a signer keypair is provided
+        then the public key will be signed. 
+        
+            -n bits - specify number of key bits, default is 4096
+
+            -i 'info text' - arbitrary text that will appear in the key files,
+            for documentary purposes.
+
+            -s secret.s - Clone the specified secret key rather than generating
+            a new one. This allows creation of new public certificates for
+            existing secret keys.
+        
+    cryptool [-v] check key[.p] signer[.p]
+
+        Check that specified key is signed by the specified signer key.
+        
+    cryptool [-v] dump [-m] key.(s|p)
+        
+        Dump interesting information from provided secret or public key.
+            
+            -m - only dump the modulus, in hex format.
+
+All operations exit with 0 in the case of success, otherwise non-zero.
+
+The .p extension is used for public key, .s for secret (private) key.
+
+The -v option enables verbosity on stdout, try this when an operation fails.
 
 There's no way to distinguish a decrypt or verify failure from an actual error,
 such as providing a corrupted key.
