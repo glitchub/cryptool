@@ -30,6 +30,11 @@ Wrapper script for openssl RSA operations, supporting the following functions:
             -s secret.s - Clone the specified secret key rather than generating
             a new one. This allows creation of new public certificates for
             existing secret keys.
+
+            -d days = number of days that the certificate is valid from time of
+            creation. Default is that the certificate is valid for the entire
+            21st century, to avoid issues on embedded systems with possibly
+            faulty clocks.
         
     cryptool [-v] check key[.p] signer[.p]
 

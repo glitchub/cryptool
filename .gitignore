@@ -1,3 +1,4 @@
-# never save private keys
+# never save keys
 *.prv
 *.p
+*.s

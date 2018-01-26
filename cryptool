@@ -43,6 +43,11 @@ Usage:
             -s secret.s - Clone the specified secret key rather than generating
             a new one. This allows creation of new public certificates for
             existing secret keys.
+
+            -d days = number of days that the certificate is valid from time of
+            creation. Default is that the certificate is valid for the entire
+            21st century, to avoid issues on embedded systems with possibly
+            faulty clocks.
         
     $me [-v] check key[.p] signer[.p]
 
@@ -131,11 +136,12 @@ case $cmd in
     generate)
         bits=4096 
         keyname=$1
-        unset info cs cp secret
-        while getopts ":n:i:s:" o; do case $o in
+        unset info cs cp secret days
+        while getopts ":n:i:s:d:" o; do case $o in
             n) bits=$OPTARG;;
             i) info=$OPTARG;;
             s) secret=$OPTARG; [ -f "$secret" ] || die "$secret not found";;
+            d) days=$OPTARG;;
             *) usage;;
         esac; done    
         shift $((OPTIND-1))
@@ -154,35 +160,42 @@ case $cmd in
             signopts="-cert $cp -keyfile $cs"
         fi    
         ((bits >= 512)) || die "Must be at least 512 bits"
-        
-        # Create a work directory
+        if ((days)); then
+            startdate=
+            enddate="default_days = $days"
+        else 
+            startdate="default_startdate = 20000101000000Z"
+            enddate="default_enddate = 20991231235959Z"
+        fi
+
+        # Create a work directory 
         work=${TMPDIR:-"/tmp"}/cryptool.$RANDOM.$RANDOM
         mkdir $work || die "Unable to create directory $work"
         echo "Using work dir $work" >&2
         # Make sure it's deleted on exit
         trap "rm -rf $work" EXIT
         # Config for req and ca commands
-        echo "
-        [ req ]
-        distinguished_name = dn
-        x509_extensions = ext
-        [ dn ]
-        [ ext ]
-        basicConstraints = CA:true,pathlen:0
-        [ ca ]
-        default_ca = default_ca
-        [ default_ca ]
-        new_certs_dir = $work/newcerts
-        database = $work/database
-        serial = $work/serial
-        default_md = sha256
-        policy = policy
-        default_startdate = 20000101000000Z
-        default_enddate = 20991231235959Z
-        unique_subject = no
-        [ policy ]
-        commonName = supplied
-        " > $work/config
+        cat << EOT > $work/config
+[ req ]
+distinguished_name = dn
+[ dn ]
+[ ca ]
+default_ca = default_ca
+[ default_ca ]
+new_certs_dir = $work/newcerts
+database = $work/database
+serial = $work/serial
+default_md = sha256
+$startdate
+$enddate
+unique_subject = no
+email_in_dn = no
+copy_extensions = none
+policy = policy
+[ policy ]
+commonName = supplied
+EOT
+        cat $work/config >&2
         # Other stuff needed by the ca command
         mkdir -p $work/newcerts
         touch $work/database
@@ -190,10 +203,10 @@ case $cmd in
         echo "Using serial number $serial" >&2
         # Serial file contains hex
         printf %X $serial > $work/serial
-        
+       
         # Now, generate the secret key, maybe from the existing secret
         if [ "$secret" ]; then
-           $openssl rsa 2>/dev/null < $secret > $s || die "Invalid secret key $secret"
+            $openssl rsa 2>/dev/null < $secret > $s || die "Invalid secret key $secret"
         else
             $openssl genrsa $bits > $s || die "$s generation failed"
         fi    
