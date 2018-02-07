@@ -1,5 +1,7 @@
 Wrapper script for openssl RSA operations, supporting the following functions:
 
+Usage:
+
     cryptool [-v] sign from[.p from.s] < unsignedtext > signedtext
         Sign the input on stdin with the sender's key pair, and output as
         obfuscated result.
@@ -31,15 +33,25 @@ Wrapper script for openssl RSA operations, supporting the following functions:
             a new one. This allows creation of new public certificates for
             existing secret keys.
 
-            -d days = number of days that the certificate is valid from time of
+            -d days - number of days that the certificate is valid from time of
             creation. Default is that the certificate is valid for the entire
             21st century, to avoid issues on embedded systems with possibly
             faulty clocks.
+
+            -l - lock the new secret key with a passphrase entered on console.
         
     cryptool [-v] check key[.p] signer[.p]
 
         Check that specified key is signed by the specified signer key.
-        
+    
+    cryptool [-v] lock unlocked[.s] > locked.s
+
+        Lock secret key with a passphrase entered on the console.
+
+    cryptool [-v] unlock locked[.s] > unlocked.s
+
+        Remove the passphrase from secret key. 
+
     cryptool [-v] dump [-m] key.(s|p)
         
         Dump interesting information from provided secret or public key.
