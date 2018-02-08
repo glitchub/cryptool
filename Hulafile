@@ -1,0 +1,10 @@
+name 'cryptool'
+license 'Unlicense'
+
+available_configurations %w[cosmos:cake cosmos:lwm macosx]
+
+install do
+  dir = host_config.board ? "/sbin" : "/bin"
+  cmd "install", "-d", "#{dstroot}#{prefix}#{dir}"
+  cmd "install", "-m0755", "#{srcroot}/cryptool", "#{dstroot}#{prefix}#{dir}"
+end
