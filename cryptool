@@ -1,48 +1,65 @@
 #!/bin/bash
 
-# disable stderr unless -v
+# save stderr to &9
 exec 9>&2
-if [ "$1" == -v ]; then shift; else exec 2>/dev/null; fi
 
-# die with a message to stderr (whether -v or not)
+# die with a message to stderr
 die() { echo "$*" >&9; exit 1; }
-
 usage()
 {
     me=${0##*/}
     die "\
+Wrapper script for various OpenSSL RSA operations. 
+
 Usage:
+    
+    $me [opts] sign [-y] from[.p [from.s|label]] < plaintext > signedtext
+    $me [opts] sign -d [-y] from[.s]|label < plaintext > signature.dat
 
-    $me [-v] sign from[.p from.s] < unsignedtext > signedtext
-        Sign the input on stdin with the sender's key pair, and output as
-        obfuscated result.
+        In the first form, sign the input with the sender's key pair, and
+        output PKCS7 signedtext.
 
-    $me [-v] verify from[.p] [signer[.p]] < signedtext > unsignedtext
-        Verify the signature of signed data on stdin with the sender's public
-        key and output the original unsigned input. If the sender's key is
-        signed, then must also provide the signer's public key.
+        In the second form, sign the input with sender's secret key, and output
+        the detached signature file.
 
-    $me [-v] encrypt to[.p] < plaintext > ciphertext
-        Encrypt the input on stdin with recipient's public key, output the
-        encrypted result.
+            -y - use the labeled secret key in yubihsm2
 
-    $me [-v] decrypt to[.s] < ciphertext > plaintext
-        Decrypt the input with the recipient's private key, output the original
-        unencrypted input.
+    $me [opts] verify from[.p] [signer[.p]] < signedtext > plaintext
+    $me [opts] verify -d signature.dat from[.p] [signer[.p]] < plaintext
 
-    $me [-v] generate [-n bits] [-i 'info text'] [-s secret.s] keyname [signer[.p signer.s]]
+        In the first form, verify PKCS7 signedtext with the sender's public
+        key and output the original plaintext. 
+
+        In the second form, decrypt the signature file with sender's public key
+        and verify it is correct for the input plaintext.
         
+        If the sender's public key is signed, then must also provide the
+        signer's public key.
+
+    $me [opts] encrypt to[.p] < plaintext > ciphertext
+
+        Encrypt the plaintext input with recipient's public key, output the
+        PKCS7 ciphertext.
+
+    $me [opts] decrypt [-y] to[.s]|label < ciphertext > plaintext
+
+        Decrypt the PKCS7 ciphertest with the recipient's secret key, output
+        the original plaintext.
+
+            -y - use the labeled secret key in yubihsm2
+
+    $me [opts] generate [-n bits] [-i 'info text'] [-s secret.s] keyname [signer[.p signer.s]]
+
         Create new keyname.s and keyname.p. If a signer keypair is provided
-        then the public key will be signed. 
-        
+        then the public key will be signed.
+
             -n bits - specify number of key bits, default is 4096
 
             -i 'info text' - arbitrary text that will appear in the key files,
             for documentary purposes.
 
             -s secret.s - Clone the specified secret key rather than generating
-            a new one. This allows creation of new public certificates for
-            existing secret keys.
+            a new one. This allows existing secret keys to be renamed, etc.
 
             -d days - number of days that the certificate is valid from time of
             creation. Default is that the certificate is valid for the entire
@@ -50,91 +67,244 @@ Usage:
             faulty clocks.
 
             -l - lock the new secret key with a passphrase entered on console.
-        
-    $me [-v] check key[.p] signer[.p]
 
-        Check that specified key is signed by the specified signer key.
-    
-    $me [-v] lock unlocked[.s] > locked.s
+    $me [opts] check key[.p] signer[.p]
+
+        Check that the key is signed by the signer key.
+
+    $me [opts] lock unlocked[.s] > locked.s
 
         Lock secret key with a passphrase entered on the console.
 
-    $me [-v] unlock locked[.s] > unlocked.s
+    $me [opts] unlock locked[.s] > unlocked.s
 
-        Remove the passphrase from secret key. 
+        Remove the passphrase from secret key.
 
-    $me [-v] dump [-m] key.(s|p)
-        
-        Dump interesting information from provided secret or public key.
-            
-            -m - only dump the modulus, in hex format.
+    $me [opts] dump [-m] key.(s|p)
+
+        Dump interesting information about the specified secret or public key.
+
+            -b - show number of RSA key bits
+
+            -n - show the key common name
+
+            -m - show the key modulus in hex
+
+    $me [opts] info [-r] < ciphertext|signedtext
+
+        Report whether input is encrypted or signed, and the common name of the
+        key that encrypted/signed it.
+
+            -r - show raw CMS info.
 
 All operations exit with 0 in the case of success, otherwise non-zero.
 
 The .p extension is used for public key, .s for secret (private) key.
 
-The -v option enables verbosity on stdout, try this when an operation fails.
+'opts' can include:
 
-There's no way to distinguish a decrypt or verify failure from an actual error,
-such as providing a corrupted key.
+    -v - enable excessive verbosity on stderr
 
-This script requires and checks for the openssl command-line program version
-1.0.1e or later."
+    -s - invoke a shell after creating a configuration environment, to allow
+    manual testing within that environment (implies -v) 
+
+Operations that support yubihsm2 require that yubihsm-connector is listening on
+localhost port 12345, \$YUBIHSM contains the full path to yubihsm_pkcs11.so,
+and \$LIBP11 contains the full path to libp11 pkcs11.so.
+
+Requires openssl CLI version 1.0.1e or later."
 }
 
+# parse general opts
+verbose=0 shell=0
+while getopts ":vs" o; do case $o in
+    v) verbose=1;;
+    s) verbose=1; shell=1;;
+    *) usage;;
+esac; done
+
+shift $((OPTIND-1))
 (($#)) || usage
+
+# disable stderr unless verbose
+((verbose)) || exec 2>/dev/null
+
 # hunt for usable openssl
 unset openssl
-for o in /usr/local/dev/bin/openssl /usr/bin/openssl $(type -P openssl); do
+for o in $(type -P openssl) /usr/local/dev/bin/openssl; do
     if [ -x "$o" ] && (
-        # "OpenSSL 1.0.2k  26 Jan 2017" -> "OpenSSL 1 0 2k 26 Jan 2017" 
+        # "OpenSSL 1.0.2k  26 Jan 2017" -> "OpenSSL 1 0 2k 26 Jan 2017"
         set -- $(IFS=" ."; echo $($o version))
         # We want "OpenSSL 1 0 1e" or higher
         (($#>=4)) && [[ $1 == OpenSSL ]] && (($2>=1)) && ! ( (($2==1 && $3==0)) && [[ $4 < 1e ]] )
     ); then
         openssl=$o
         break
-   fi     
+   fi
 done
 [ "$openssl" ] || die "Requires OpenSSL 1.0.1e or later"
 echo "Using $openssl" >&2
 
-# ignore standard config
-export OPENSSL_CONF=/dev/null
-
 # return true if specified key is self-signed
 selfsigned()
 {
-    local hash=($($openssl x509 -hash -issuer_hash -noout < $1)) || die "X509 hash failed"
-    ((${#hash[*]} == 2)) || die "Invalid X509 hash result '${hash[*]}'"
+    local hash=($($openssl x509 -hash -issuer_hash -noout < $1)) || die "$1 cert is invalid"
+    ((${#hash[*]} == 2)) || die "Invalid x509 hash result '${hash[*]}'"
     [ ${hash[0]} == ${hash[1]} ]
 }
 
-# return true is specified secret key is locked
-locked()
+# check if $1 is correctly signed by $2 (if they are the same then it must be self-signed)
+signed()
 {
-    grep -q "DEK-Info:" $1
+    if ! $openssl verify -CAfile $2 $1 >&2; then
+        self-signed $1 && die "$1 is self-signed"
+        die "$1 not signed by $2"
+    fi    
+}   
+
+
+# ignore standard config
+export OPENSSL_CONF=/dev/null
+
+# Create a work directory and populate with operation-specific config files,
+# set required environment variables, etc.
+configure()
+{
+    workdir=${TMPDIR:-"/tmp"}/cryptool.$RANDOM.$RANDOM
+    mkdir $workdir || die "Unable to create directory $workdir"
+    echo "Using work dir $workdir" >&2
+    # Make sure it's deleted on exit
+    trap "rm -rf $workdir" EXIT
+    # tell openssl about our config file
+    export OPENSSL_CONF=$workdir/openssl.conf
+    case $1 in
+        yubihsm)
+            # Perform a yubihsm2 operation
+            [ -f "$LIBP11" ] || die 'Missing or invalid $LIBP11, must be path to libp11 pkcs11.so'
+            [ -f "$YUBIHSM" ] || die 'Missing or invalid $YUBIHSM, must be path to yubihsm_pkcs11.so'
+            echo "
+                openssl_conf = s_conf
+
+                [ s_conf ]
+                engines = s_engines
+
+                [ s_engines ]
+                pkcs11 = s_pkcs11
+
+                [ s_pkcs11 ]
+                engine_id = pkcs11
+                dynamic_path = $LIBP11
+                MODULE_PATH = $YUBIHSM
+                init = 0
+            " > $OPENSSL_CONF
+            export YUBIHSM_PKCS11_CONF=$workdir/yubi.conf
+            echo "connector = http://127.0.0.1:12345" > $YUBIHSM_PKCS11_CONF
+            ;;
+
+        generate)
+            # Generate a signed certificate
+            # $2=serial $3=startdate $4=enddate
+            echo "
+                [ req ]
+                distinguished_name = s_dn
+
+                [ s_dn ]
+
+                [ ca ]
+                default_ca = s_ca
+
+                [ s_ca ]
+                new_certs_dir = $workdir/newcerts
+                database = $workdir/database
+                serial = $workdir/serial
+                default_md = sha256
+                unique_subject = no
+                email_in_dn = no
+                copy_extensions = none
+                policy = s_policy
+                $3
+                $4
+                [ s_policy ]
+                commonName = supplied
+            " > $OPENSSL_CONF
+            # Add stuff for ca
+            mkdir -p $workdir/newcerts
+            touch $workdir/database
+            printf %X $2 > $workdir/serial
+            ;;
+
+        *)  # just create the temp dir without any magic
+            touch $OPENSSL_CONF
+            ;;
+    esac
+    cat $OPENSSL_CONF >&2
+    ((shell)) && { bash; die "Operation aborted due to -s"; }
 }
 
 set -o pipefail
 cmd=$1
 shift
+OPTIND=1 # reset getopts
 case $cmd in
     sign)
-        (($# == 1 || $# == 2)) || usage
-        p=$1.p; s=$1.s
-        (($# == 2)) && { p=$1; s=$2; }
-        [ -f $p ] || die "$p not found"
-        [ -f $s ] || die "$s not found"
-        $openssl cms -binary -sign -nodetach -nocerts -signer $p -inkey $s -outform DER || die "Sign failed"
+        unset yubihsm detached
+        while getopts ":yd" o; do case $o in
+            y) yubihsm=1;;
+            d) detached=1;;
+            *) usage;;
+        esac; done
+        shift $((OPTIND-1))
+        
+        if ((detached)); then
+            (($#==1)) || usage
+            if ((yubihsm)); then
+                label="slot_0-label_$1"
+                echo "Using label '$label'" >&2
+                configure yubihsm
+                $openssl dgst -sha256 -sign "$label" -engine pkcs11 -keyform engine || die "Sign failed"
+            else
+                s=${1%.s}.s; [ -f $s ] || die "$s not found"
+                $openssl dgst -sha256 -sign $s || die "Sign failed"
+            fi
+        else
+            if ((yubihsm)); then
+                (($#==2)) || usage
+                p=${1%.p}.p;
+                [ -f $p ] || die "$p not found"
+                label="slot_0-label_$2"
+                echo "Using label '$label'" >&2
+                configure yubihsm
+                $openssl cms -binary -sign -nodetach -nocerts -signer $p -inkey "$label" -outform DER -engine pkcs11 -keyform engine || die "Sign failed"
+            else
+                (($# == 1 || $# == 2)) || usage
+                p=$1.p; s=$1.s
+                (($# == 2)) && { p=$1; s=$2; }
+                [ -f $p ] || die "$p not found"
+                [ -f $s ] || die "$s not found"
+                $openssl cms -binary -sign -nodetach -nocerts -signer $p -inkey $s -outform DER || die "Sign failed"
+            fi
+        fi    
         ;;
 
     verify)
+        unset detached
+        while getopts ":d:" o; do case $o in
+            d) detached=$OPTARG; [ -f $detached ] || die "$detached not found";;
+            *) usage;;
+        esac; done
+        shift $((OPTIND-1))
         (($# && $# <= 2)) || usage
         p=${1%.p}.p; [ -f $p ] || die "$p not found"
         cp=$p
         (($# == 2)) && { cp=${2%.p}.p; [ -f $cp ] || die "$cp not found"; }
-        $openssl cms -inform DER -verify -CAfile $cp -certfile $p || die "Verify failed"
+        if  [ "$detached" ]; then
+            signed $p $cp
+            configure 
+            $openssl x509 -pubkey -noout < $p > $workdir/pk || die "Invalid public key $p"
+            $openssl dgst -verify $workdir/pk -signature $detached >&2 && echo "Verify OK" || die "Verify failed"
+        else    
+            $openssl cms -inform DER -verify -CAfile $cp -certfile $p || die "Verify failed"
+        fi    
         ;;
 
     encrypt)
@@ -144,13 +314,26 @@ case $cmd in
         ;;
 
     decrypt)
+        unset yubihsm
+        while getopts ":y" o; do case $o in
+            y) yubihsm=1;;
+            *) usage;;
+        esac; done
+        shift $((OPTIND-1))
         (($# == 1)) || usage
-        s=${1%.s}.s; [ -f $s ] || die "$s not found"
-        $openssl cms -inform DER -decrypt -inkey $s || die "Decrypt failed"
+        if ((yubihsm)); then
+            label="slot_0-label_$1"
+            echo "Using label '$label'" >&2
+            configure yubihsm
+            $openssl cms -inform DER -decrypt -inkey "$label" -engine pkcs11 -keyform engine || die "Decrypt failed (yubihsm)"
+        else
+            s=${1%.s}.s; [ -f $s ] || die "$s not found"
+            $openssl cms -inform DER -decrypt -inkey $s || die "Decrypt failed"
+        fi
         ;;
 
     generate)
-        bits=4096 
+        bits=4096
         keyname=$1
         unset info cs cp secret days lock
         while getopts ":n:i:s:d:l" o; do case $o in
@@ -160,7 +343,7 @@ case $cmd in
             d) days=$OPTARG;;
             l) lock="-aes256";;
             *) usage;;
-        esac; done    
+        esac; done
         shift $((OPTIND-1))
         (($# >= 1 && $# <= 3)) || usage
         p=$1.p; [ -e $p ] && die "$p already exists"
@@ -174,63 +357,29 @@ case $cmd in
             [ -f $cp ] || die "$cp not found"
             selfsigned $cp || die "$cp is already signed"
             signopts="-cert $cp -keyfile $cs"
-        fi    
-        ((bits >= 512)) || die "Must be at least 512 bits"
-        if ((days)); then
-            startdate=
-            enddate="default_days = $days"
-        else 
-            startdate="default_startdate = 20000101000000Z"
-            enddate="default_enddate = 20991231235959Z"
         fi
+        ((bits >= 512)) || die "Must be at least 512 bits"
 
-        # Create a work directory 
-        work=${TMPDIR:-"/tmp"}/cryptool.$RANDOM.$RANDOM
-        mkdir $work || die "Unable to create directory $work"
-        echo "Using work dir $work" >&2
-        # Make sure it's deleted on exit
-        trap "rm -rf $work" EXIT
-        # Config for req and ca commands
-        cat << EOT > $work/config
-[ req ]
-distinguished_name = dn
-[ dn ]
-[ ca ]
-default_ca = default_ca
-[ default_ca ]
-new_certs_dir = $work/newcerts
-database = $work/database
-serial = $work/serial
-default_md = sha256
-$startdate
-$enddate
-unique_subject = no
-email_in_dn = no
-copy_extensions = none
-policy = policy
-[ policy ]
-commonName = supplied
-EOT
-        cat $work/config >&2
-        export OPENSSL_CONF=$work/config
-        # Other stuff needed by the ca command
-        mkdir -p $work/newcerts
-        touch $work/database
+        # set up configuration
         serial=$(date +%s)
-        echo "Using serial number $serial" >&2
-        # Serial file contains hex
-        printf %X $serial > $work/serial
-       
+        start="default_startdate = 20000101000000Z"
+        end="default_enddate = 20991231235959Z"
+        if ((days)); then
+            start="default_days = $days"
+            ende=""
+        fi
+        configure generate $serial $start $end
+
         # Now, generate the secret key, maybe copied from the existing secret
         if [ "$secret" ]; then
             $openssl rsa $lock -out $s < $secret || die "Unable to clone $secret"
         else
             $openssl genrsa $lock -out $s $bits || die "$s generation failed."
-        fi    
+        fi
         # Create signing request
-        $openssl req -new -key $s -subj "/CN=$1 $serial" -batch > $work/csr || die "CSR generation failed"
+        $openssl req -new -key $s -subj "/CN=$1 $serial" -batch > $workdir/csr || die "CSR generation failed"
         # Sign it per the config
-        $openssl ca -notext $signopts -in $work/csr -batch > $p || die "CSR signing failed"
+        $openssl ca -notext $signopts -in $workdir/csr -batch > $p || die "CSR signing failed"
         # Append greppable info strings, PEM parsers will ignore this
         info="Info: $1 $serial $info"
         echo $info >> $s
@@ -241,55 +390,87 @@ EOT
         (($# == 2)) || usage
         p=${1%.p}.p; [ -f $p ] || die "$p not found"
         cp=${2%.p}.p; [ -f $cp ] || die "$cp not found"
-        selfsigned $p && die "$p is self-signed"
-        $openssl verify -CAfile $cp $p >&2 || die "$p is not signed by $cp"
+        signed $p $cp
         ;;
 
     lock)
         (($# == 1)) || usage
         s=${1%.s}.s; [ -f $s ] || die "$s not found"
-        locked $s && die "$s is already locked"
+        grep -q "DEK-Info:" $s && die "$s is already locked"
         $openssl rsa -aes256 < $s || die "Lock failed"
         # Also appended info
-        grep "Info: " $s
+        grep "^Info: " $s
         ;;
 
     unlock)
         (($# == 1)) || usage
         s=${1%.s}.s; [ -f $s ] || die "$s not found"
-        locked $s || die "$s is not locked"
-        $openssl rsa < $s || die "Unlock failed" 
+        grep -q "DEK-Info:" $s || die "$s is not locked"
+        $openssl rsa < $s || die "Unlock failed"
         # Also appended info
-        grep "Info:" $s
+        grep "^Info: " $s
         ;;
 
     dump)
-        modulus=0
-        while getopts ":m" o; do case $o in
-            m) modulus=1;;
+        what=0
+        while getopts ":bmn" o; do case $o in
+            b) what=size;;
+            m) what=mod;;
+            n) what=name;;
             *) usage;;
-        esac; done    
+        esac; done
         shift $((OPTIND-1))
-        (($# == 1)) || usage "Expected: key.(s|p)"
+        (($# == 1)) || usage
         k=$1; [ -f $k ] || die "$k not found"
-        if ((modulus)); then
-            case $k in
-                *.p) $openssl x509 -in $k -modulus -noout || die "Invalid public key $k";;
-                *.s) $openssl rsa -in $k -modulus -noout || die "Invalid secret key $k";;
-                *) die "Invalid key name";;
-            esac
-        else    
-            case $k in
-                *.p) $openssl x509 -in $k -text -noout || die "Invalid public key $k";;
-                *.s) $openssl rsa -in $k -text -check -noout || die "Invalid secret key $k";;
-                *) die "Invalid key name";;
-            esac
-            # also show appended info
-            grep "Info:" $k
-        fi    
+        case $what in
+            name)
+                i=($(grep "^Info: " $k))
+                ((${#i[*]} < 3)) && die "Missing or invalid key info"
+                echo ${i[1]} ${i[2]}
+                ;;
+
+            mod|size)
+                case $k in
+                    *.p) m=$($openssl x509 -in $k -modulus -noout) || die "Invalid public key $k";;
+                    *.s) m=$($openssl rsa -in $k -modulus -noout) || die "Invalid secret key $k";;
+                    *) die "Invalid key filename";;
+                esac
+                m=${m#*=}
+                [ $what == size ] && m=$((${#m}*4)) # key size in bits
+                echo $m
+                ;;
+
+            *)
+                case $k in
+                    *.p) $openssl x509 -in $k -text -noout || die "Invalid public key $k";;
+                    *.s) $openssl rsa -in $k -text -check -noout || die "Invalid secret key $k";;
+                    *) die "Invalid key filename";;
+                esac
+                # also show appended info
+                grep "^Info: " $k
+                ;;
+        esac
         ;;
 
-    *) usage;;
+    info)
+        while getopts ":r" o; do case $o in
+            r) raw=1;;
+            *) usage;;
+        esac; done
+        shift $((OPTIND-1))
+        (($#)) && usage;
+        if ((raw)); then
+            $openssl cms -inform DER -cmsout -print -noout || die "Input is invalid"
+        else
+            IFS=$'\n'
+            set -- $($openssl cms -inform DER -cmsout -print -noout | grep -i '^ *\(contenttype\|issuer\):');
+            (($# < 2)) && die "Input is invalid"
+            [[ $1 == *signed* ]] && op="Signed" || op="Encrypted"
+            echo $op by '"'${2##*CN=}'"'
+        fi
+        ;;
+
+    *) die "Invalid command $cmd";;
 esac
 
 true
