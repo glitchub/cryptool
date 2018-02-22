@@ -48,7 +48,7 @@ Usage:
 
             -y - use the labeled secret key in yubihsm2
 
-    $me [opts] generate [-n bits] [-i 'info text'] [-s secret.s] keyname [signer[.p signer.s]]
+    $me [opts] generate [-n bits] [-i 'info text'] [-s secret.s] [-l] keyname [signer[.p signer.s]]
 
         Create new keyname.s and keyname.p. If a signer keypair is provided
         then the public key will be signed.
@@ -145,43 +145,56 @@ done
 [ "$openssl" ] || die "Requires OpenSSL 1.0.1e or later"
 echo "Using $openssl" >&2
 
-# return true if specified key is self-signed
-selfsigned()
+# get cert issuer
+issuer()
 {
-    local hash=($($openssl x509 -hash -issuer_hash -noout < $1)) || die "$1 cert is invalid"
-    ((${#hash[*]} == 2)) || die "Invalid x509 hash result '${hash[*]}'"
-    [ ${hash[0]} == ${hash[1]} ]
+    local m; m=$($openssl x509 -issuer -noout < $1) || die "Invalid public key $1"
+    [[ $m == *CN=* ]] || die "$1 issuer '$m' is invalid"
+    echo ${m#*CN=}
+}
+
+# get cert subject
+subject()
+{
+    local m; m=$($openssl x509 -subject -noout < $1) || die "Invalid public key $1"
+    [[ $m == *CN=* ]] || die "$1 subject '$m' is invalid"
+    echo ${m#*CN=}
 }
 
 # check if $1 is correctly signed by $2 (if they are the same then it must be self-signed)
 signed()
 {
-    if ! $openssl verify -CAfile $2 $1 >&2; then
-        self-signed $1 && die "$1 is self-signed"
-        die "$1 not signed by $2"
+    local s1; s1=$(subject $1) || exit
+    local s2; s2=$(subject $2) || exit    
+    local i1; i1=$(issuer $1) || exit
+    if [[ $s1 == $s2 ]]; then
+        # they are the same cert
+        [[ $i1 == $s1 ]] || die "$1 is not self-signed"
+    else
+        [[ $i1 == $s2 ]] || die "$1 is not signed by $2"
     fi    
-}   
+}
 
+# Create a work directory, and delete it on exit
+workdir=${TMPDIR:-"/tmp"}/cryptool.$RANDOM.$RANDOM
+mkdir $workdir || die "Unable to create directory $workdir"
+echo "Using work dir $workdir" >&2
+# Make sure it's deleted on exit
+trap "rm -rf $workdir" EXIT
 
 # ignore standard config
 export OPENSSL_CONF=/dev/null
 
-# Create a work directory and populate with operation-specific config files,
-# set required environment variables, etc.
+# Populate workdir with operation-specific config files, set required
+# environment variables, etc.
 configure()
 {
-    workdir=${TMPDIR:-"/tmp"}/cryptool.$RANDOM.$RANDOM
-    mkdir $workdir || die "Unable to create directory $workdir"
-    echo "Using work dir $workdir" >&2
-    # Make sure it's deleted on exit
-    trap "rm -rf $workdir" EXIT
-    # tell openssl about our config file
-    export OPENSSL_CONF=$workdir/openssl.conf
     case $1 in
         yubihsm)
             # Perform a yubihsm2 operation
             [ -f "$LIBP11" ] || die 'Missing or invalid $LIBP11, must be path to libp11 pkcs11.so'
             [ -f "$YUBIHSM" ] || die 'Missing or invalid $YUBIHSM, must be path to yubihsm_pkcs11.so'
+            export OPENSSL_CONF=$workdir/openssl.conf
             echo "
                 openssl_conf = s_conf
 
@@ -204,6 +217,7 @@ configure()
         generate)
             # Generate a signed certificate
             # $2=serial $3=startdate $4=enddate
+            export OPENSSL_CONF=$workdir/openssl.conf
             echo "
                 [ req ]
                 distinguished_name = s_dn
@@ -233,8 +247,7 @@ configure()
             printf %X $2 > $workdir/serial
             ;;
 
-        *)  # just create the temp dir without any magic
-            touch $OPENSSL_CONF
+        *)  die "Invalid config"
             ;;
     esac
     cat $OPENSSL_CONF >&2
@@ -297,9 +310,8 @@ case $cmd in
         p=${1%.p}.p; [ -f $p ] || die "$p not found"
         cp=$p
         (($# == 2)) && { cp=${2%.p}.p; [ -f $cp ] || die "$cp not found"; }
+        signed $p $cp
         if  [ "$detached" ]; then
-            signed $p $cp
-            configure 
             $openssl x509 -pubkey -noout < $p > $workdir/pk || die "Invalid public key $p"
             $openssl dgst -verify $workdir/pk -signature $detached >&2 && echo "Verify OK" || die "Verify failed"
         else    
@@ -355,7 +367,7 @@ case $cmd in
             (($# > 2)) && { cp=$2; cs=$3; }
             [ -f $cs ] || die "$cs not found"
             [ -f $cp ] || die "$cp not found"
-            selfsigned $cp || die "$cp is already signed"
+            signed $cp $cp # ensure self-signed
             signopts="-cert $cp -keyfile $cs"
         fi
         ((bits >= 512)) || die "Must be at least 512 bits"
@@ -366,9 +378,9 @@ case $cmd in
         end="default_enddate = 20991231235959Z"
         if ((days)); then
             start="default_days = $days"
-            ende=""
+            end=""
         fi
-        configure generate $serial $start $end
+        configure generate "$serial" "$start" "$end"
 
         # Now, generate the secret key, maybe copied from the existing secret
         if [ "$secret" ]; then
@@ -424,9 +436,17 @@ case $cmd in
         k=$1; [ -f $k ] || die "$k not found"
         case $what in
             name)
-                i=($(grep "^Info: " $k))
-                ((${#i[*]} < 3)) && die "Missing or invalid key info"
-                echo ${i[1]} ${i[2]}
+                case $k in
+                    *.p) # public key, get the subject CN
+                        subject $k
+                        ;;
+                    *.s) # secret key, get the name from the info string
+                        i=($(grep "^Info: " $k))
+                        ((${#i[*]} < 3)) && die "Invalid secret key $k"
+                        echo ${i[1]} ${i[2]}
+                        ;;
+                    *) die "Invalid key filename";;     
+                esac
                 ;;
 
             mod|size)
