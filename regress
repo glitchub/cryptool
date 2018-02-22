@@ -1,0 +1,83 @@
+#!/bin/bash
+# cryptool regression test script
+# Note, does not test HSM functions
+
+set -e
+set -v
+
+dir=regress.tempdir
+mkdir -p $dir
+cd $dir
+cryptool=../cryptool
+
+head -c1048576 /dev/urandom > data
+
+# Generating master key
+rm -f master.[sp]
+$cryptool generate -d 1 -i "this is the master" master
+$cryptool dump master.p
+$cryptool dump master.s
+b=$($cryptool dump -b master.p); echo $b; ((b==4096))
+b=$($cryptool dump -b master.s); echo $b; ((b==4096))
+m=$($cryptool dump -m master.p); echo $m; ((${#m}==1024))
+m=$($cryptool dump -m master.s); echo $m; ((${#m}==1024))
+np=$($cryptool dump -n master.p); echo $np
+ns=$($cryptool dump -n master.s); echo $ns; [[ $np == $ns ]]
+
+# Generating slave key
+rm -f slave.[sp]
+$cryptool generate -n 2048 -i "this is the slave" slave master
+$cryptool check slave master
+$cryptool dump slave.p
+$cryptool dump slave.s
+b=$($cryptool dump -b slave.p); echo $b; ((b==2048))
+b=$($cryptool dump -b slave.s); echo $b; ((b==2048))
+m=$($cryptool dump -m slave.p); echo $m; ((${#m}==512))
+m=$($cryptool dump -m slave.s); echo $m; ((${#m}==512))
+np=$($cryptool dump -n slave.p); echo $np
+ns=$($cryptool dump -n slave.s); echo $ns; [[ $np == $ns ]]
+
+# Creating locked key
+# ENTER "1234" AT THE PROMPTS! 
+$cryptool lock master.s > locked.s
+
+# Testing sign/verify
+$cryptool sign master < data > signed
+$cryptoo info < signed
+$cryptool verify master < signed > verified
+diff -q data verified
+
+# Testing sign/verify with locked key
+$cryptool sign master.p locked.s < data > signed
+$cryptoo info < signed
+$cryptool verify master < signed > verified
+diff -q data verified
+
+# Testing sign/verify with slave key
+$cryptool sign slave < data > signed 
+$cryptool info < signed
+$cryptool verify slave master < signed > verified
+diff -q data verified
+
+# Testing detached sign/verify
+$cryptool sign -d master < data > detached
+$cryptool verify -d detached master < data
+
+# Testing detached sign/verify with locked key
+$cryptool sign -d locked < data > detached
+$cryptool verify -d detached master < data
+
+# Testing encrypt/decrypt
+$cryptool encrypt master < data > enc
+$cryptool info < enc
+
+$cryptool decrypt master < enc > dec
+diff -q data dec
+
+# Testing decrypt with locked key
+$cryptool decrypt locked < enc > dec 
+diff -q data dec
+
+# Success!
+cd ..
+rm -rf $dir

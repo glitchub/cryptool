@@ -37,7 +37,7 @@ Usage:
 
             -y - use the labeled secret key in yubihsm2
 
-    cryptool [opts] generate [-n bits] [-i 'info text'] [-s secret.s] keyname [signer[.p signer.s]]
+    cryptool [opts] generate [-n bits] [-i 'info text'] [-s secret.s] [-l] keyname [signer[.p signer.s]]
 
         Create new keyname.s and keyname.p. If a signer keypair is provided
         then the public key will be signed.
