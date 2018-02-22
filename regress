@@ -49,7 +49,7 @@ diff -q data verified
 
 # Testing sign/verify with locked key
 $cryptool sign master.p locked.s < data > signed
-$cryptoo info < signed
+$cryptool info < signed
 $cryptool verify master < signed > verified
 diff -q data verified
 
