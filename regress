@@ -19,8 +19,8 @@ $cryptool dump master.p
 $cryptool dump master.s
 b=$($cryptool dump -b master.p); echo $b; ((b==4096))
 b=$($cryptool dump -b master.s); echo $b; ((b==4096))
-m=$($cryptool dump -m master.p); echo $m; ((${#m}==1024))
-m=$($cryptool dump -m master.s); echo $m; ((${#m}==1024))
+mp=$($cryptool dump -m master.p); echo $mp
+ms=$($cryptool dump -m master.s); echo $ms; [[ $mp == $ms ]]
 np=$($cryptool dump -n master.p); echo $np
 ns=$($cryptool dump -n master.s); echo $ns; [[ $np == $ns ]]
 
@@ -32,13 +32,13 @@ $cryptool dump slave.p
 $cryptool dump slave.s
 b=$($cryptool dump -b slave.p); echo $b; ((b==2048))
 b=$($cryptool dump -b slave.s); echo $b; ((b==2048))
-m=$($cryptool dump -m slave.p); echo $m; ((${#m}==512))
-m=$($cryptool dump -m slave.s); echo $m; ((${#m}==512))
+mp=$($cryptool dump -m slave.p); echo $mp
+ms=$($cryptool dump -m slave.s); echo $ms; [[ $mp == $ms ]]
 np=$($cryptool dump -n slave.p); echo $np
 ns=$($cryptool dump -n slave.s); echo $ns; [[ $np == $ns ]]
 
 # Creating locked key
-# ENTER "1234" AT THE PROMPTS! 
+# ENTER "zzzz" AT THE PROMPTS! 
 $cryptool lock master.s > locked.s
 
 # Testing sign/verify
