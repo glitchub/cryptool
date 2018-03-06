@@ -48,25 +48,27 @@ Usage:
 
             -y - use the labeled secret key in yubihsm2
 
-    $me [opts] generate [-n bits] [-i 'info text'] [-s secret.s] [-l] keyname [signer[.p signer.s]]
+    $me [opts] generate [-b bits] [-i 'info text'] [-s secret.s] [-d days] [-l] [-c name] keyname [signer[.p signer.s]]
 
         Create new keyname.s and keyname.p. If a signer keypair is provided
         then the public key will be signed.
 
-            -n bits - specify number of key bits, default is 4096
+            -b bits - specify number of key bits, default is 4096
 
             -i 'info text' - arbitrary text that will appear in the key files,
             for documentary purposes.
 
             -s secret.s - Clone the specified secret key rather than generating
-            a new one. This allows existing secret keys to be renamed, etc.
+            a new one. This allows public certs to be regenerated, for example.
 
             -d days - number of days that the certificate is valid from time of
             creation. Default is that the certificate is valid for the entire
             21st century, to avoid issues on embedded systems with possibly
             faulty clocks.
 
-            -l - lock the new secret key with a passphrase entered on console.
+            -l - lock the new secret key with passphrase entered on console.
+
+            -c name - use specified common name instead of 'keyname timestamp'
 
     $me [opts] check key[.p] signer[.p]
 
@@ -86,7 +88,7 @@ Usage:
 
             -b - show number of RSA key bits
 
-            -n - show the key common name
+            -c - show the key common name
 
             -m - show the key modulus in hex
 
@@ -162,7 +164,7 @@ subject()
     echo ${m#*CN=}
 }
 
-# check if $1 is correctly signed by $2 (if they are the same then it must be self-signed)
+# check if public key $1 is correctly signed by $2 (if they are the same then it must be self-signed)
 signed()
 {
     local s1; s1=$(subject $1) || exit
@@ -174,6 +176,7 @@ signed()
     else
         [[ $i1 == $s2 ]] || die "$1 is not signed by $2"
     fi
+    $openssl verify -CAfile $2 $1 &>2 || die "$1 signature is invalid"
 }
 
 # Create a work directory, and delete it on exit
@@ -348,13 +351,14 @@ case $cmd in
     generate)
         bits=4096
         keyname=$1
-        unset info cs cp secret days lock
-        while getopts ":n:i:s:d:l" o; do case $o in
-            n) bits=$OPTARG;;
+        unset info cs cp secret days lock cn
+        while getopts ":b:n:i:s:d:lc:" o; do case $o in
+            [bn]) bits=$OPTARG;; # -n is legacy
             i) info=$OPTARG;;
             s) secret=$OPTARG; [ -f "$secret" ] || die "$secret not found";;
             d) days=$OPTARG;;
             l) lock="-aes256";;
+            c) cn=$OPTARG;;
             *) usage;;
         esac; done
         shift $((OPTIND-1))
@@ -390,11 +394,12 @@ case $cmd in
             $openssl genrsa $lock -out $s $bits || die "$s generation failed."
         fi
         # Create signing request
-        $openssl req -new -key $s -subj "/CN=$1 $serial" -batch > $workdir/csr || die "CSR generation failed"
+        [[ $cn ]] || cn="$1 $serial"
+        $openssl req -new -key $s -subj "/CN=$cn" -batch > $workdir/csr || die "CSR generation failed"
         # Sign it per the config
         $openssl ca -notext $signopts -in $workdir/csr -batch > $p || die "CSR signing failed"
         # Append greppable info strings, PEM parsers will ignore this
-        info="Info: $1 $serial $info"
+        info="Info: $cn $info"
         echo $info >> $s
         echo $info >> $p
         ;;
@@ -426,10 +431,10 @@ case $cmd in
 
     dump)
         what=0
-        while getopts ":bmn" o; do case $o in
+        while getopts ":bmcn" o; do case $o in
             b) what=size;;
             m) what=mod;;
-            n) what=name;;
+            [cn]) what=name;; # -n is legacy
             *) usage;;
         esac; done
         shift $((OPTIND-1))
@@ -443,8 +448,7 @@ case $cmd in
                         ;;
                     *.s) # secret key, get the name from the info string
                         i=($(grep "^Info: " $k))
-                        ((${#i[*]} < 3)) && die "Invalid secret key $k"
-                        echo ${i[1]} ${i[2]}
+                        echo ${i[*]:1}
                         ;;
                     *) die "Invalid key filename";;
                 esac

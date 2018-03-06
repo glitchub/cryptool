@@ -1,7 +1,7 @@
-Wrapper script for various OpenSSL RSA operations. 
+Wrapper script for various OpenSSL RSA operations.
 
 Usage:
-    
+
     cryptool [opts] sign [-y] from[.p [from.s|label]] < plaintext > signedtext
     cryptool [opts] sign -d [-y] from[.s]|label < plaintext > signature.dat
 
@@ -17,11 +17,11 @@ Usage:
     cryptool [opts] verify -d signature.dat from[.p] [signer[.p]] < plaintext
 
         In the first form, verify PKCS7 signedtext with the sender's public
-        key and output the original plaintext. 
+        key and output the original plaintext.
 
         In the second form, decrypt the signature file with sender's public key
         and verify it is correct for the input plaintext.
-        
+
         If the sender's public key is signed, then must also provide the
         signer's public key.
 
@@ -37,25 +37,27 @@ Usage:
 
             -y - use the labeled secret key in yubihsm2
 
-    cryptool [opts] generate [-n bits] [-i 'info text'] [-s secret.s] [-l] keyname [signer[.p signer.s]]
+    cryptool [opts] generate [-b bits] [-i 'info text'] [-s secret.s] [-d days] [-l] [-n name] keyname [signer[.p signer.s]]
 
         Create new keyname.s and keyname.p. If a signer keypair is provided
         then the public key will be signed.
 
-            -n bits - specify number of key bits, default is 4096
+            -b bits - specify number of key bits, default is 4096
 
             -i 'info text' - arbitrary text that will appear in the key files,
             for documentary purposes.
 
             -s secret.s - Clone the specified secret key rather than generating
-            a new one. This allows existing secret keys to be renamed, etc.
+            a new one. This allows public certs to be regenerated, for example.
 
             -d days - number of days that the certificate is valid from time of
             creation. Default is that the certificate is valid for the entire
             21st century, to avoid issues on embedded systems with possibly
             faulty clocks.
 
-            -l - lock the new secret key with a passphrase entered on console.
+            -l - lock the new secret key with passphrase entered on console.
+
+            -c name - use specified common name instead of 'keyname timestamp'
 
     cryptool [opts] check key[.p] signer[.p]
 
@@ -75,7 +77,7 @@ Usage:
 
             -b - show number of RSA key bits
 
-            -n - show the key common name
+            -c - show the key common name
 
             -m - show the key modulus in hex
 
@@ -95,7 +97,7 @@ The .p extension is used for public key, .s for secret (private) key.
     -v - enable excessive verbosity on stderr
 
     -s - invoke a shell after creating a configuration environment, to allow
-    manual testing within that environment (implies -v) 
+    manual testing within that environment (implies -v)
 
 Operations that support yubihsm2 require that yubihsm-connector is listening on
 localhost port 12345, $YUBIHSM contains the full path to yubihsm_pkcs11.so,

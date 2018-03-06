@@ -21,12 +21,12 @@ b=$($cryptool dump -b master.p); echo $b; ((b==4096))
 b=$($cryptool dump -b master.s); echo $b; ((b==4096))
 mp=$($cryptool dump -m master.p); echo $mp
 ms=$($cryptool dump -m master.s); echo $ms; [[ $mp == $ms ]]
-np=$($cryptool dump -n master.p); echo $np
-ns=$($cryptool dump -n master.s); echo $ns; [[ $np == $ns ]]
+np=$($cryptool dump -c master.p); echo $np
+ns=$($cryptool dump -c master.s); echo $ns; [[ $np == $ns ]]
 
 # Generating slave key
 rm -f slave.[sp]
-$cryptool generate -n 2048 -i "this is the slave" slave master
+$cryptool generate -b 2048 -c "chacha" -i "this is the slave" slave master
 $cryptool check slave master
 $cryptool dump slave.p
 $cryptool dump slave.s
@@ -34,8 +34,8 @@ b=$($cryptool dump -b slave.p); echo $b; ((b==2048))
 b=$($cryptool dump -b slave.s); echo $b; ((b==2048))
 mp=$($cryptool dump -m slave.p); echo $mp
 ms=$($cryptool dump -m slave.s); echo $ms; [[ $mp == $ms ]]
-np=$($cryptool dump -n slave.p); echo $np
-ns=$($cryptool dump -n slave.s); echo $ns; [[ $np == $ns ]]
+np=$($cryptool dump -c slave.p); echo $np
+ns=$($cryptool dump -c slave.s); echo $ns; [[ $np == $ns ]]
 
 # Creating locked key
 # ENTER "zzzz" AT THE PROMPTS! 
