@@ -105,7 +105,7 @@ The .p extension is used for public key, .s for secret (private) key.
 
 'opts' can include:
 
-    -v - enable excessive verbosity on stderr
+    -v - enable verbosity on stderr, use twice for excessive verbosity
 
     -s - invoke a shell after creating a configuration environment, to allow
     manual testing within that environment (implies -v)
@@ -120,8 +120,8 @@ Requires openssl CLI version 1.0.1e or later."
 # parse general opts
 verbose=0 shell=0
 while getopts ":vs" o; do case $o in
-    v) verbose=1;;
-    s) verbose=1; shell=1;;
+    v) ((verbose++));;
+    s) ((verbose++)); shell=1;;
     *) usage;;
 esac; done
 
@@ -130,6 +130,8 @@ shift $((OPTIND-1))
 
 # disable stderr unless verbose
 ((verbose)) || exec 2>/dev/null
+# maybe trace
+((verbose > 1)) && set -x
 
 # Look for usable openssl
 for o in ${PATH//:/\/openssl }/openssl; do
@@ -176,7 +178,7 @@ signed()
     else
         [[ $i1 == $s2 ]] || die "$1 is not signed by $2"
     fi
-    $openssl verify -CAfile $2 $1 &>2 || die "$1 signature is invalid"
+    $openssl verify -CAfile $2 $1 >&2 || die "$1 signature is invalid"
 }
 
 # Create a work directory, and delete it on exit

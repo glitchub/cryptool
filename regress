@@ -1,6 +1,7 @@
 #!/bin/bash
 # cryptool regression test script
 # Note, does not test HSM functions
+# Command line arg -v or -vv enables cryptool verbosity
 
 set -e
 set -v
@@ -8,7 +9,8 @@ set -v
 dir=regress.tempdir
 mkdir -p $dir
 cd $dir
-cryptool=../cryptool
+cryptool="../cryptool $*"
+TMPDIR=$PWD
 
 head -c1048576 /dev/urandom > data
 
@@ -78,6 +80,8 @@ diff -q data dec
 $cryptool decrypt locked < enc > dec 
 diff -q data dec
 
-# Success!
+# Delete only the files we just created so we can detect bogus files 
+rm data dec detached enc locked.s master.p master.s signed slave.p slave.s verified
 cd ..
-rm -rf $dir
+rmdir $dir
+# Success!
