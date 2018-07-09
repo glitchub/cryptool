@@ -4,7 +4,7 @@
 exec 9>&2
 
 # die with a message to stderr
-die() { echo "$*" >&9; exit 1; }
+die() { (($#)) && echo "$*" >&9; exit 1; }
 usage()
 {
     me=${0##*/}
@@ -82,7 +82,7 @@ Usage:
 
         Remove the passphrase from secret key.
 
-    $me [opts] dump [-m] key.(s|p)
+    $me [opts] dump [-m] key[.(s|p)]
 
         Dump interesting information about the specified secret or public key.
 
@@ -166,12 +166,36 @@ subject()
     echo ${m#*CN=}
 }
 
+# Given a key name or basename, try to find a usable public key and return the
+# actual name
+public()
+{
+    local k=${1%.p}.p
+    [ -f $k ] || k=$1
+    [ -f $k ] || die "$1 not found"
+    openssl x509 -noout < $k || die "Invalid public key $k"
+    echo $k
+}
+
+# Given a key name or basename, try to find usable private key and return the
+# actual name
+secret()
+{
+    local k=${1%.s}.s
+    [ -f $k ] || k=$1
+    [ -f $k ] || die "$1 not found"
+    # Don't check the key via openssl, if it's locked then openssl will trigger
+    # a password request
+    grep -ql "RSA PRIVATE KEY" $k || die "Invalid secret key $k"
+    echo $k
+}
+
 # check if public key $1 is correctly signed by $2 (if they are the same then it must be self-signed)
 signed()
 {
-    local s1; s1=$(subject $1) || exit
-    local s2; s2=$(subject $2) || exit
-    local i1; i1=$(issuer $1) || exit
+    local s1; s1=$(subject $1) || die
+    local s2; s2=$(subject $2) || die
+    local i1; i1=$(issuer $1) || die
     if [[ $s1 == $s2 ]]; then
         # they are the same cert
         [[ $i1 == $s1 ]] || die "$1 is not self-signed"
@@ -282,24 +306,21 @@ case $cmd in
                 configure yubihsm
                 $openssl dgst -sha256 -sign "$label" -engine pkcs11 -keyform engine || die "Sign failed"
             else
-                s=${1%.s}.s; [ -f $s ] || die "$s not found"
+                s=$(secret $1) || die
                 $openssl dgst -sha256 -sign $s || die "Sign failed"
             fi
         else
             if ((yubihsm)); then
                 (($#==2)) || usage
-                p=${1%.p}.p;
-                [ -f $p ] || die "$p not found"
+                p=$(public $1) || die
                 label="slot_0-label_$2"
                 echo "Using label '$label'" >&2
                 configure yubihsm
                 $openssl cms -binary -sign -nodetach -nocerts -signer $p -inkey "$label" -outform DER -engine pkcs11 -keyform engine || die "Sign failed"
             else
                 (($# == 1 || $# == 2)) || usage
-                p=$1.p; s=$1.s
-                (($# == 2)) && { p=$1; s=$2; }
-                [ -f $p ] || die "$p not found"
-                [ -f $s ] || die "$s not found"
+                p=$(public $1) || die
+                s=$(secret ${2:-$1}) || die
                 $openssl cms -binary -sign -nodetach -nocerts -signer $p -inkey $s -outform DER || die "Sign failed"
             fi
         fi
@@ -312,10 +333,9 @@ case $cmd in
             *) usage;;
         esac; done
         shift $((OPTIND-1))
-        (($# && $# <= 2)) || usage
-        p=${1%.p}.p; [ -f $p ] || die "$p not found"
-        cp=$p
-        (($# == 2)) && { cp=${2%.p}.p; [ -f $cp ] || die "$cp not found"; }
+        (($# == 1 || $# == 2)) || usage
+        p=$(public $1) || die
+        cp=$(public ${2:-$1}) || die
         signed $p $cp
         if  [ "$detached" ]; then
             $openssl x509 -pubkey -noout < $p > $workdir/pk || die "Invalid public key $p"
@@ -327,7 +347,7 @@ case $cmd in
 
     encrypt)
         (($# == 1)) || usage
-        p=${1%.p}.p; [ -f $p ] || die "$p not found"
+        p=$(public $1) || die
         $openssl cms -binary -encrypt -aes-256-cbc -outform DER $p || die "Encrypt failed"
         ;;
 
@@ -345,7 +365,7 @@ case $cmd in
             configure yubihsm
             $openssl cms -inform DER -decrypt -inkey "$label" -engine pkcs11 -keyform engine || die "Decrypt failed (yubihsm)"
         else
-            s=${1%.s}.s; [ -f $s ] || die "$s not found"
+            s=$(secret $1) || die
             $openssl cms -inform DER -decrypt -inkey $s || die "Decrypt failed"
         fi
         ;;
@@ -353,11 +373,11 @@ case $cmd in
     generate)
         bits=4096
         keyname=$1
-        unset info cs cp secret days lock cn
+        unset info cs cp clone days lock cn
         while getopts ":b:n:i:s:d:lc:" o; do case $o in
             [bn]) bits=$OPTARG;; # -n is legacy
             i) info=$OPTARG;;
-            s) secret=$OPTARG; [ -f "$secret" ] || die "$secret not found";;
+            s) clone=$(secret $OPTARG)|| die;;
             d) days=$OPTARG;;
             l) lock="-aes256";;
             c) cn=$OPTARG;;
@@ -369,11 +389,8 @@ case $cmd in
         s=$1.s; [ -e $s ] && die "$s already exists"
         signopts="-selfsign -keyfile $s"
         if (($# > 1)); then
-            # signing key
-            cp=$2.p; cs=$2.s
-            (($# > 2)) && { cp=$2; cs=$3; }
-            [ -f $cs ] || die "$cs not found"
-            [ -f $cp ] || die "$cp not found"
+            cp=$(public $2) || die
+            cs=$(secret ${3:-$2}) || die
             signed $cp $cp # ensure self-signed
             signopts="-cert $cp -keyfile $cs"
         fi
@@ -390,8 +407,8 @@ case $cmd in
         configure generate "$serial" "$start" "$end"
 
         # Now, generate the secret key, maybe copied from the existing secret
-        if [ "$secret" ]; then
-            $openssl rsa $lock -out $s < $secret || die "Unable to clone $secret"
+        if [ "$clone" ]; then
+            $openssl rsa $lock -out $s < $secret || die "Unable to clone $clone"
         else
             $openssl genrsa $lock -out $s $bits || die "$s generation failed."
         fi
@@ -408,14 +425,14 @@ case $cmd in
 
     check)
         (($# == 2)) || usage
-        p=${1%.p}.p; [ -f $p ] || die "$p not found"
-        cp=${2%.p}.p; [ -f $cp ] || die "$cp not found"
+        p=$(public $1) || die
+        cp=$(public $2) || die
         signed $p $cp
         ;;
 
     lock)
         (($# == 1)) || usage
-        s=${1%.s}.s; [ -f $s ] || die "$s not found"
+        s=$(secret $1) || die
         grep -q "DEK-Info:" $s && die "$s is already locked"
         $openssl rsa -aes256 < $s || die "Lock failed"
         # Also appended info
@@ -424,7 +441,7 @@ case $cmd in
 
     unlock)
         (($# == 1)) || usage
-        s=${1%.s}.s; [ -f $s ] || die "$s not found"
+        s=$(secret $1) || die
         grep -q "DEK-Info:" $s || die "$s is not locked"
         $openssl rsa < $s || die "Unlock failed"
         # Also appended info
@@ -441,38 +458,40 @@ case $cmd in
         esac; done
         shift $((OPTIND-1))
         (($# == 1)) || usage
-        k=$1; [ -f $k ] || die "$k not found"
+        if k=$(public $1 9>/dev/null); then
+            ispub=1
+        elif k=$(secret $1 9>/dev/null); then
+            ispub=0
+        else
+            die "$1 not found or invalid"
+        fi
         case $what in
             name)
-                case $k in
-                    *.p) # public key, get the subject CN
-                        subject $k
-                        ;;
-                    *.s) # secret key, get the name from the info string
-                        i=($(grep "^Info: " $k))
-                        echo ${i[*]:1}
-                        ;;
-                    *) die "Invalid key filename";;
-                esac
+                if ((ispub)); then
+                    subject $k
+                else
+                    i=($(grep "^Info: " $k))
+                    echo ${i[*]:1}
+                fi
                 ;;
 
             mod|size)
-                case $k in
-                    *.p) m=$($openssl x509 -in $k -modulus -noout) || die "Invalid public key $k";;
-                    *.s) m=$($openssl rsa -in $k -modulus -noout) || die "Invalid secret key $k";;
-                    *) die "Invalid key filename";;
-                esac
+                if ((ispub)); then
+                    m=$($openssl x509 -in $k -modulus -noout) || die "Invalid public key $k"
+                else
+                    m=$($openssl rsa -in $k -modulus -noout) || die "Invalid secret key $k"
+                fi
                 m=${m#*=}
                 [ $what == size ] && m=$((${#m}*4)) # key size in bits
                 echo $m
                 ;;
 
             *)
-                case $k in
-                    *.p) $openssl x509 -in $k -text -noout || die "Invalid public key $k";;
-                    *.s) $openssl rsa -in $k -text -check -noout || die "Invalid secret key $k";;
-                    *) die "Invalid key filename";;
-                esac
+                if ((ispub)); then
+                    $openssl x509 -in $k -text -noout || die "Invalid public key $k"
+                else
+                    $openssl rsa -in $k -text -check -noout || die "Invalid secret key $k"
+                fi
                 # also show appended info
                 grep "^Info: " $k
                 ;;
