@@ -1,10 +1,11 @@
 #!/bin/bash
-# cryptool regression test script
-# Note, does not test HSM functions
+# cryptool regression test script, verifies that cryptool will work on your
+# platform. Note, does not test HSM functions.
 # Command line arg -v or -vv enables cryptool verbosity
 
 set -e
 set -v
+set -u
 
 dir=regress.tempdir
 mkdir -p $dir
@@ -45,7 +46,7 @@ $cryptool lock master.s > locked.s
 
 # Testing sign/verify
 $cryptool sign master < data > signed
-$cryptoo info < signed
+$cryptool info < signed
 $cryptool verify master < signed > verified
 diff -q data verified
 
@@ -61,24 +62,24 @@ $cryptool info < signed
 $cryptool verify slave master < signed > verified
 diff -q data verified
 
-# Testing detached sign/verify
-$cryptool sign -d master < data > detached
-$cryptool verify -d detached master < data
-
-# Testing detached sign/verify with locked key
-$cryptool sign -d locked < data > detached
-$cryptool verify -d detached master < data
-
 # Testing encrypt/decrypt
 $cryptool encrypt master < data > enc
 $cryptool info < enc
-
 $cryptool decrypt master < enc > dec
 diff -q data dec
 
 # Testing decrypt with locked key
 $cryptool decrypt locked < enc > dec 
 diff -q data dec
+
+# Testing detached sign/verify
+# If this fails it may mean your openssl doesn't properly support sha256
+$cryptool sign -d master < data > detached
+$cryptool verify -d detached master < data
+
+# Testing detached sign/verify with locked key
+$cryptool sign -d locked < data > detached
+$cryptool verify -d detached master < data
 
 # Delete only the files we just created so we can detect bogus files 
 rm data dec detached enc locked.s master.p master.s signed slave.p slave.s verified
