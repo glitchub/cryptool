@@ -133,8 +133,10 @@ shift $((OPTIND-1))
 # maybe trace
 ((verbose > 1)) && set -x
 
-# Look for usable openssl
-for o in ${PATH//:/\/openssl }/openssl; do
+# Look for usable openssl. Prefer the one in the same directory that this
+# script is in, if it exists, on the theory that it's a later version that the
+# one provided by the distro (and presumably built with 'config no_shared').
+for o in ${0%/*}/openssl ${PATH//:/\/openssl }/openssl; do
     [[ -f $o &&  -x $o ]] || continue;
     v=($(IFS=" ."; echo $($o version 2>/dev/null)))
     echo "Found $o version '${v[*]}'" >&2
@@ -154,16 +156,16 @@ done
 issuer()
 {
     local m; m=$($openssl x509 -issuer -noout < $1) || die "Invalid public key $1"
-    [[ $m == *CN=* ]] || die "$1 issuer '$m' is invalid"
-    echo ${m#*CN=}
+    [[ "$m" =~ CN\ ?=(.+) ]] || die "$1 subject '$m' is invalid"
+    echo ${BASH_REMATCH[1]}
 }
 
 # get cert subject
 subject()
 {
     local m; m=$($openssl x509 -subject -noout < $1) || die "Invalid public key $1"
-    [[ $m == *CN=* ]] || die "$1 subject '$m' is invalid"
-    echo ${m#*CN=}
+    [[ "$m" =~ CN\ ?=(.+) ]] || die "$1 subject '$m' is invalid"
+    echo ${BASH_REMATCH[1]}
 }
 
 # Given a key name or basename, try to find a usable public key and return the
