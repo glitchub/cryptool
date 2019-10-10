@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# save stderr to &9
-exec 9>&2
+# save stderr and stdout
+exec 9>&2 8>&1
 
 # die with a message to stderr
 die() { (($#)) && echo "$*" >&9; exit 1; }
@@ -13,18 +13,22 @@ Wrapper script for various OpenSSL RSA operations.
 
 Usage:
 
-    $me [opts] sign [-y] from[.p [from.s|label]] < plaintext > signedtext
+    $me [opts] sign [-y] [-p] from[.p [from.s|label]] < plaintext > signedtext
     $me [opts] sign -d [-y] from[.s]|label < plaintext > signature.dat
 
         In the first form, sign the input with the sender's key pair, and
         output PKCS7 signedtext.
 
-        In the second form, sign the input with sender's secret key, and output
+        In the second form, sign the input with sender's secret key and output
         the detached signature file.
 
             -y - use the labeled secret key in yubihsm2
 
-    $me [opts] verify from[.p] [signer[.p]] < signedtext > plaintext
+            -p - instead of signedtext, output a package containing plaintext
+            and signature files, should always be specified for large input
+            files (>64MB).
+
+    $me [opts] verify [-p] from[.p] [signer[.p]] < signedtext > plaintext
     $me [opts] verify -d signature.dat from[.p] [signer[.p]] < plaintext
 
         In the first form, verify PKCS7 signedtext with the sender's public
@@ -36,17 +40,25 @@ Usage:
         If the sender's public key is signed, then must also provide the
         signer's public key.
 
-    $me [opts] encrypt to[.p] < plaintext > ciphertext
+            -p - input is a package created with 'sign -p'
+
+    $me [opts] encrypt [-p] to[.p] < plaintext > ciphertext
 
         Encrypt the plaintext input with recipient's public key, output the
         PKCS7 ciphertext.
 
-    $me [opts] decrypt [-y] to[.s]|label < ciphertext > plaintext
+            -p - instead of ciphertext, output a package containing ciphertext
+            and session key files, should always be specified for large input
+            files (> 64MB).
+
+    $me [opts] decrypt [-p] [-y] to[.s]|label < ciphertext > plaintext
 
         Decrypt the PKCS7 ciphertest with the recipient's secret key, output
         the original plaintext.
 
             -y - use the labeled secret key in yubihsm2
+
+            -p - input is a package created with 'encrypt -p'
 
     $me [opts] generate [-b bits] [-i 'info text'] [-s secret.s] [-d days] [-l] [-c name] keyname [signer[.p signer.s]]
 
@@ -95,7 +107,7 @@ Usage:
     $me [opts] info [-r] < ciphertext|signedtext
 
         Report whether input is encrypted or signed, and the common name of the
-        key that encrypted/signed it.
+        key that encrypted/signed it (does not work with packages).
 
             -r - show raw CMS info.
 
@@ -292,16 +304,22 @@ shift
 OPTIND=1 # reset getopts
 case $cmd in
     sign)
-        unset yubihsm detached
-        while getopts ":yd" o; do case $o in
+        unset yubihsm detached packaged
+        while getopts ":ydp" o; do case $o in
             y) yubihsm=1;;
             d) detached=1;;
+            p) detached=1; packaged=1;;
             *) usage;;
         esac; done
         shift $((OPTIND-1))
 
         if ((detached)); then
             (($#==1)) || usage
+            if ((packaged)); then
+                mkdir $workdir/package
+                cat > $workdir/package/plaintext
+                exec 0<$workdir/package/plaintext 1>$workdir/package/signature
+            fi
             if ((yubihsm)); then
                 label="slot_0-label_$1"
                 echo "Using label '$label'" >&2
@@ -310,6 +328,9 @@ case $cmd in
             else
                 s=$(secret $1) || die
                 $openssl dgst -sha256 -sign $s || die "Sign failed"
+            fi
+            if ((packaged)); then
+                tar -cvf- -C $workdir/package plaintext signature | cat >&8 || die "Sign failed"
             fi
         else
             if ((yubihsm)); then
@@ -329,9 +350,10 @@ case $cmd in
         ;;
 
     verify)
-        unset detached
-        while getopts ":d:" o; do case $o in
+        unset detached packaged
+        while getopts ":d:p" o; do case $o in
             d) detached=$OPTARG; [ -f $detached ] || die "$detached not found";;
+            p) packaged=1;;
             *) usage;;
         esac; done
         shift $((OPTIND-1))
@@ -339,7 +361,13 @@ case $cmd in
         p=$(public $1) || die
         cp=$(public ${2:-$1}) || die
         signed $p $cp
-        if  [ "$detached" ]; then
+        if ((packaged)); then
+            mkdir $workdir/package
+            tar -x -C $workdir/package plaintext signature || die "Invalid package"
+            $openssl x509 -pubkey -noout < $p > $workdir/pk || die "Invalid public key $p"
+            cat $workdir/package/plaintext | $openssl dgst -verify $workdir/pk -signature $workdir/package/signature >&2 || die "Verify failed"
+            cat $workdir/package/plaintext
+        elif [ "$detached" ]; then
             $openssl x509 -pubkey -noout < $p > $workdir/pk || die "Invalid public key $p"
             $openssl dgst -verify $workdir/pk -signature $detached >&2 && echo "Verify OK" || die "Verify failed"
         else
@@ -348,19 +376,40 @@ case $cmd in
         ;;
 
     encrypt)
-        (($# == 1)) || usage
-        p=$(public $1) || die
-        $openssl cms -binary -encrypt -aes-256-cbc -outform DER $p || die "Encrypt failed"
-        ;;
-
-    decrypt)
-        unset yubihsm
-        while getopts ":y" o; do case $o in
-            y) yubihsm=1;;
+        unset packaged
+        while getopts ":p" o; do case $o in
+            p) packaged=1;;
             *) usage;;
         esac; done
         shift $((OPTIND-1))
         (($# == 1)) || usage
+        p=$(public $1) || die
+        if ((packaged)); then
+            mkdir $workdir/package
+            $openssl rand 128 > $workdir/package/key
+            $openssl enc -aes-256-cbc -pass=file:$workdir/package/key > $workdir/package/ciphertext
+            exec 0<$workdir/package/key 1>$workdir/package/session
+        fi
+        $openssl cms -binary -encrypt -aes-256-cbc -outform DER $p || die "Encrypt failed"
+        if ((packaged)); then
+            tar -cvf - -C $workdir/package ciphertext session | cat >&8
+        fi
+        ;;
+
+    decrypt)
+        unset yubihsm packaged
+        while getopts ":yp" o; do case $o in
+            y) yubihsm=1;;
+            p) packaged=1;;
+            *) usage;;
+        esac; done
+        shift $((OPTIND-1))
+        (($# == 1)) || usage
+        if ((packaged)); then
+            mkdir $workdir/package
+            tar -x -C $workdir/package ciphertext session || die "Invalid package"
+            exec 0<$workdir/package/session 1>$workdir/package/key
+        fi
         if ((yubihsm)); then
             label="slot_0-label_$1"
             echo "Using label '$label'" >&2
@@ -369,6 +418,9 @@ case $cmd in
         else
             s=$(secret $1) || die
             $openssl cms -inform DER -decrypt -inkey $s || die "Decrypt failed"
+        fi
+        if ((packaged)); then
+            $openssl enc  -d -aes-256-cbc -pass=file:$workdir/package/key < $workdir/package/ciphertext >&8 || die "Decrypt failed"
         fi
         ;;
 
