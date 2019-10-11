@@ -5,6 +5,25 @@ exec 9>&2 8>&1
 
 # die with a message to stderr
 die() { (($#)) && echo "$*" >&9; exit 1; }
+
+# Given two arbitrary files, package them to stdout or die
+# Write the size of f1 as decimal string with '\n', then the two files
+package()
+{
+    local f1=$1 f2=$2
+    set -- $(ls -no $f1)
+    (($# >= 4)) &&  echo $4 && cat $f1 && cat $f2 || die "Packaging failed"
+}
+
+# Given the output of the above on stdin, restore the two files
+# First read the size of f1, then f1, then whatever is left is f2
+unpackage()
+{
+    local f1=$1 f2=$2 size
+    read size
+    ((size > 0)) && dd of=$f1 bs=1 count=$size && cat > $f2 || die "Invalid package"
+}
+
 usage()
 {
     me=${0##*/}
@@ -329,9 +348,7 @@ case $cmd in
                 s=$(secret $1) || die
                 $openssl dgst -sha256 -sign $s || die "Sign failed"
             fi
-            if ((packaged)); then
-                tar -cvf- -C $workdir/package plaintext signature | cat >&8 || die "Sign failed"
-            fi
+            ((packaged)) && package $workdir/package/signature $workdir/package/plaintext >&8
         else
             if ((yubihsm)); then
                 (($#==2)) || usage
@@ -363,7 +380,7 @@ case $cmd in
         signed $p $cp
         if ((packaged)); then
             mkdir $workdir/package
-            tar -x -C $workdir/package plaintext signature || die "Invalid package"
+            unpackage $workdir/package/signature $workdir/package/plaintext
             $openssl x509 -pubkey -noout < $p > $workdir/pk || die "Invalid public key $p"
             cat $workdir/package/plaintext | $openssl dgst -verify $workdir/pk -signature $workdir/package/signature >&2 || die "Verify failed"
             cat $workdir/package/plaintext
@@ -391,9 +408,7 @@ case $cmd in
             exec 0<$workdir/package/key 1>$workdir/package/session
         fi
         $openssl cms -binary -encrypt -aes-256-cbc -outform DER $p || die "Encrypt failed"
-        if ((packaged)); then
-            tar -cvf - -C $workdir/package ciphertext session | cat >&8
-        fi
+        ((packaged)) && package $workdir/package/session $workdir/package/ciphertext >&8
         ;;
 
     decrypt)
@@ -407,7 +422,7 @@ case $cmd in
         (($# == 1)) || usage
         if ((packaged)); then
             mkdir $workdir/package
-            tar -x -C $workdir/package ciphertext session || die "Invalid package"
+            unpackage $workdir/package/session $workdir/package/ciphertext
             exec 0<$workdir/package/session 1>$workdir/package/key
         fi
         if ((yubihsm)); then
