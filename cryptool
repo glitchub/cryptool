@@ -6,8 +6,9 @@ exec 9>&2 8>&1
 # die with a message to stderr
 die() { (($#)) && echo "$*" >&9; exit 1; }
 
-# Given two arbitrary files, package them to stdout or die
-# Write the size of f1 as decimal string with '\n', then the two files
+# Given two arbitrary files, package them to stdout or die.
+# The package starts with the size of f1 as '\n'-terminated decimal string,
+# followed by the two files.
 package()
 {
     local f1=$1 f2=$2
@@ -15,8 +16,7 @@ package()
     (($# >= 4)) &&  echo $4 && cat $f1 && cat $f2 || die "Packaging failed"
 }
 
-# Given the output of the above on stdin, restore the two files
-# First read the size of f1, then f1, then whatever is left is f2
+# Given a package on stdin, restore the two files.
 unpackage()
 {
     local f1=$1 f2=$2 size
@@ -28,58 +28,54 @@ usage()
 {
     me=${0##*/}
     die "\
-Wrapper script for various OpenSSL RSA operations.
+cryptool v2.0 - a wrapper script for various OpenSSL RSA operations
 
 Usage:
 
-    $me [opts] sign [-y] [-p] from[.p [from.s|label]] < plaintext > signedtext
+    $me [opts] sign [-y] from[.s]|label < plaintext > signedtext
     $me [opts] sign -d [-y] from[.s]|label < plaintext > signature.dat
 
-        In the first form, sign the input with the sender's key pair, and
-        output PKCS7 signedtext.
+        In the first form, sign the input with the sender's secret key and
+        output signedtext.
 
         In the second form, sign the input with sender's secret key and output
-        the detached signature file.
+        a detached signature file.
 
             -y - use the labeled secret key in yubihsm2
-
-            -p - instead of signedtext, output a package containing plaintext
-            and signature files, should always be specified for large input
-            files (>64MB).
 
     $me [opts] verify [-p] from[.p] [signer[.p]] < signedtext > plaintext
     $me [opts] verify -d signature.dat from[.p] [signer[.p]] < plaintext
 
-        In the first form, verify PKCS7 signedtext with the sender's public
-        key and output the original plaintext.
+        In the first form, verify signedtext with the sender's public key and
+        output the original plaintext. This automatically detects the legacy
+        PKCS7 signedtext format used by crytool v1.X.
 
-        In the second form, decrypt the signature file with sender's public key
-        and verify it is correct for the input plaintext.
+        In the second form, verify that detached signature file is correct for
+        input plaintext.
 
         If the sender's public key is signed, then must also provide the
         signer's public key.
 
-            -p - input is a package created with 'sign -p'
+    $me [opts] encrypt to[.p] < plaintext > ciphertext
 
-    $me [opts] encrypt [-p] to[.p] < plaintext > ciphertext
+        Encrypt the plaintext input with recipient's public key, output ciphertext.
 
-        Encrypt the plaintext input with recipient's public key, output the
-        PKCS7 ciphertext.
+    $me [opts] decrypt [-y] to[.s]|label < ciphertext > plaintext
 
-            -p - instead of ciphertext, output a package containing ciphertext
-            and session key files, should always be specified for large input
-            files (> 64MB).
-
-    $me [opts] decrypt [-p] [-y] to[.s]|label < ciphertext > plaintext
-
-        Decrypt the PKCS7 ciphertest with the recipient's secret key, output
-        the original plaintext.
+        Decrypt ciphertest with the recipient's secret key and output the
+        original plaintext. This automatically detects the legacy PKCS7 format
+        used by cryptool v1.X.
 
             -y - use the labeled secret key in yubihsm2
 
-            -p - input is a package created with 'encrypt -p'
+    $me [opts] generate [-b bits] [-i 'info text'] [-l] keyname]
+    $me [opts] generate -c [-b bits] [-i 'info text'] [-l] [-s secret.s] [-l] [-d days] [-n name] keyname [signer[.p signer.s]]
 
-    $me [opts] generate [-b bits] [-i 'info text'] [-s secret.s] [-d days] [-l] [-c name] keyname [signer[.p signer.s]]
+        Generate a new key pair, named 'keyname.s' and 'keyname.p'.
+
+        In the first form, the public key is an RSA key.
+
+        In the second form, the public key is a certificate.
 
         Create new keyname.s and keyname.p. If a signer keypair is provided
         then the public key will be signed.
@@ -89,6 +85,8 @@ Usage:
             -i 'info text' - arbitrary text that will appear in the key files,
             for documentary purposes.
 
+            -l - lock the secret key with passphrase entered on console.
+
             -s secret.s - Clone the specified secret key rather than generating
             a new one. This allows public certs to be regenerated, for example.
 
@@ -96,8 +94,6 @@ Usage:
             creation. Default is that the certificate is valid for the entire
             21st century, to avoid issues on embedded systems with possibly
             faulty clocks.
-
-            -l - lock the new secret key with passphrase entered on console.
 
             -c name - use specified common name instead of 'keyname timestamp'
 
